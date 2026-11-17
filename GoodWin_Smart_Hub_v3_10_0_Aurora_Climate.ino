@@ -1317,13 +1317,13 @@ void publishMqttSensorDiscovery(const char *objectId, const char *name, const ch
   if (unit && unit[0]) config += ",\"unit_of_measurement\":\"" + String(unit) + "\"";
   if (deviceClass && deviceClass[0]) config += ",\"device_class\":\"" + String(deviceClass) + "\"";
   if (icon && icon[0]) config += ",\"icon\":\"" + String(icon) + "\"";
-  config += ",\"state_class\":\"measurement\",\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.9.0\"}}";
+  config += ",\"state_class\":\"measurement\",\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.10.0\"}}";
   const String topic = "homeassistant/sensor/goodwin_" + String(objectId) + "/config";
   mqttClient.publish(topic.c_str(), config.c_str(), true);
 }
 
 void publishMqttDiscovery() {
-  const String device = "\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.9.0\"}";
+  const String device = "\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.10.0\"}";
   String light = "{\"name\":\"GoodWin Smart Light\",\"default_entity_id\":\"light.goodwin_smart_light\",\"unique_id\":\"gw_esp_001_mqtt_light\",\"schema\":\"json\",\"state_topic\":\"";
   light += mqttTopic("light/state") + "\",\"command_topic\":\"" + mqttTopic("light/set");
   light += "\",\"availability_topic\":\"" + mqttTopic("availability");
@@ -2783,6 +2783,7 @@ static void drawLayoutWeatherPartial() {
     }
   } else if (hubLayoutId == 6) {
     if (landscape) {
+      hubTFT.fillRect(5,25,45,48,HUB_BG); hubWeatherIcon(28,52,1);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorTempC)?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
       drawValueBox(54,29,100,31,HUB_BG,HUB_WHITE,3,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorFeelsLikeC)?"FEELS %.1fC":"FEELS --",weatherValid?outdoorFeelsLikeC:0.0f);
@@ -2791,7 +2792,12 @@ static void drawLayoutWeatherPartial() {
       drawValueBox(10,98,58,17,HUB_PANEL,HUB_CYAN,2,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorPressureHpa)?"%.0f":"----",weatherValid?outdoorPressureHpa:0.0f);
       drawValueBox(87,98,61,17,HUB_PANEL2,HUB_WHITE,2,value);
+      snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorWindSpeedKmh)?"WIND %.0fkm/h":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f);
+      drawValueBox(5,124,72,10,HUB_BG,HUB_MUTED,1,value);
+      snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorCloudCover)?"CLOUD %.0f%%":"CLOUD --",weatherValid?outdoorCloudCover:0.0f);
+      drawValueBox(81,124,74,10,HUB_BG,HUB_MUTED,1,value);
     } else {
+      hubTFT.fillRect(88,22,38,45,HUB_BG); hubWeatherIcon(100,43,1);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorTempC)?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
       drawValueBox(5,28,90,34,HUB_BG,HUB_WHITE,3,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorFeelsLikeC)?"FEELS %.1fC":"FEELS --",weatherValid?outdoorFeelsLikeC:0.0f);
@@ -2800,6 +2806,14 @@ static void drawLayoutWeatherPartial() {
       drawValueBox(9,94,48,14,HUB_PANEL,HUB_CYAN,2,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorPressureHpa)?"%.0f":"----",weatherValid?outdoorPressureHpa:0.0f);
       drawValueBox(70,94,48,14,HUB_PANEL2,HUB_WHITE,2,value);
+      snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorWindSpeedKmh)?"WIND %.0fkm/h":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f);
+      drawValueBox(7,119,112,10,HUB_BG,HUB_MUTED,1,value);
+      snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorCloudCover)?"CLOUD %.0f%%":"CLOUD --",weatherValid?outdoorCloudCover:0.0f);
+      drawValueBox(7,132,112,10,HUB_BG,HUB_MUTED,1,value);
+      snprintf(value,sizeof(value),weatherValid&&outdoorPrecipProbability>=0?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0);
+      drawValueBox(7,145,60,10,HUB_BG,HUB_MUTED,1,value);
+      snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorUvIndex)?"UV %.1f":"UV --",weatherValid?outdoorUvIndex:0.0f);
+      drawValueBox(72,145,48,10,HUB_BG,HUB_MUTED,1,value);
     }
   } else if (hubLayoutId == 2) {
     if (landscape) {
@@ -3160,6 +3174,9 @@ void weatherTask(void *parameter) {
               const bool firstWeather = !weatherValid;
               const bool visibleWeatherChange = firstWeather || isnan(outdoorTempC) || isnan(outdoorHumidity) || isnan(outdoorPrecipMm) ||
                 changedAtTenth(t, outdoorTempC) || changedAtTenth(h, outdoorHumidity) ||
+                changedAtTenth(feels, outdoorFeelsLikeC) || changedAtTenth(pressure, outdoorPressureHpa) ||
+                changedAtTenth(windSpeed, outdoorWindSpeedKmh) || changedAtTenth(windDirection, outdoorWindDirection) ||
+                changedAtTenth(cloudCover, outdoorCloudCover) || changedAtTenth(uvIndex, outdoorUvIndex) ||
                 changedAtTenth(hourlyP, outdoorPrecipMm) ||
                 probability != outdoorPrecipProbability || w != outdoorWeatherCode;
               portENTER_CRITICAL(&hubDataMux);
