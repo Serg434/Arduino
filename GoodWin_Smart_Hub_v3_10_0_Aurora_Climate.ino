@@ -3037,7 +3037,10 @@ void updateSmartHub() {
       const bool visibleChange = firstSample || isnan(indoorTempC) || isnan(indoorHumidity) ||
         changedAtTenth(t, indoorTempC) || changedAtTenth(h, indoorHumidity);
       indoorHumidity = h; indoorTempC = t; sensorValid = true;
-      if (visibleChange) hubSensorDirty = true;
+      if (visibleChange) {
+        hubSensorDirty = true;
+        publishMqttState(); // Push updated climate readings to retained MQTT sensors.
+      }
       if (matterStarted && climateEndpointReady) {
         const bool tempChanged = isnan(lastMatterTemperature) || changedAtTenth(indoorTempC, lastMatterTemperature);
         const bool humidityChanged = isnan(lastMatterHumidity) || changedAtTenth(indoorHumidity, lastMatterHumidity);
@@ -3187,7 +3190,10 @@ void weatherTask(void *parameter) {
               outdoorPrecipProbability = probability; outdoorWeatherCode = w; weatherValid = true;
               portEXIT_CRITICAL(&hubDataMux);
               weatherStatus = "OK";
-              if (visibleWeatherChange) hubWeatherDirty = true;
+              if (visibleWeatherChange) {
+                hubWeatherDirty = true;
+                publishMqttState(); // Push updated weather readings without waiting for a light command.
+              }
               nextDelay = WEATHER_INTERVAL_MS;
               LOG_B("Open-Meteo OK: %.1f C feels %.1f C, %.0f hPa, wind %.1f km/h, rain %.1f mm %d%%", t, feels, pressure, windSpeed, hourlyP, probability);
             } else {
