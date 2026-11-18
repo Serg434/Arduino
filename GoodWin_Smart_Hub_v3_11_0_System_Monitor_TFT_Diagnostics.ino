@@ -171,10 +171,10 @@ static constexpr uint8_t TFT_BACKLIGHT_PERCENT = 85;
 
 SPIClass hubSPI(VSPI);
 Adafruit_ST7735 hubTFT(&hubSPI, TFT1_CS, TFT1_DC, TFT1_RST);
-// Small reusable RGB565 canvas for dynamic widgets only: 114x34 = 7.7 KB.
+// Small reusable RGB565 canvas for dynamic widgets only: 114x26 = 5.8 KB.
 // The full-screen 128x160 framebuffer would require 40 KB.
 static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
-static constexpr int16_t HUB_VALUE_CANVAS_H = 34;
+static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
 static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
 static volatile bool hubDisplayDirty = true; // full redraw: boot, layout or structural change
 static volatile bool hubClockDirty = false;
@@ -2951,7 +2951,7 @@ static void drawAnalogClockPartial() {
 }
 
 // Render each changing value completely in RAM, then transfer the finished patch.
-// This removes the visible clear-then-print interval during telemetry refreshes.
+// This removes the visible clear-then-print interval during telemetry refreshes. (5.8 KB RAM)
 static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
                          uint16_t bg, uint16_t fg, uint8_t textSize,
                          const char *value) {
@@ -3048,7 +3048,7 @@ static void drawLayoutWeatherPartial() {
     if (landscape) {
       hubTFT.fillRect(5,25,45,48,HUB_BG); hubWeatherIcon(28,52,1);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorTempC)?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
-      drawValueBox(54,29,100,31,HUB_BG,HUB_WHITE,3,value);
+      drawValueBox(54,29,100,26,HUB_BG,HUB_WHITE,3,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorFeelsLikeC)?"FEELS %.1fC":"FEELS --",weatherValid?outdoorFeelsLikeC:0.0f);
       drawValueBox(56,58,96,12,HUB_BG,HUB_MUTED,1,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorHumidity)?"%.0f%%":"--%",weatherValid?outdoorHumidity:0.0f);
@@ -3062,7 +3062,7 @@ static void drawLayoutWeatherPartial() {
     } else {
       hubTFT.fillRect(88,22,38,45,HUB_BG); hubWeatherIcon(100,43,1);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorTempC)?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
-      drawValueBox(5,28,90,34,HUB_BG,HUB_WHITE,3,value);
+      drawValueBox(5,28,90,26,HUB_BG,HUB_WHITE,3,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorFeelsLikeC)?"FEELS %.1fC":"FEELS --",weatherValid?outdoorFeelsLikeC:0.0f);
       drawValueBox(7,60,112,12,HUB_BG,HUB_MUTED,1,value);
       snprintf(value,sizeof(value),weatherValid&&!isnan(outdoorHumidity)?"%.0f%%":"--%",weatherValid?outdoorHumidity:0.0f);
@@ -3086,7 +3086,7 @@ static void drawLayoutWeatherPartial() {
       drawValueBox(108, 99, 35, 14, HUB_PANEL, HUB_WHITE, 1, value);
     } else {
       snprintf(value, sizeof(value), weatherValid ? "%.1fC" : "--.-C", weatherValid ? outdoorTempC : 0.0f);
-      drawValueBox(7, 72, 114, 34, HUB_BG, HUB_WHITE, (weatherValid && outdoorTempC < -9.9f) ? 2 : 3, value);
+      drawValueBox(7, 72, 114, 26, HUB_BG, HUB_WHITE, (weatherValid && outdoorTempC < -9.9f) ? 2 : 3, value);
       snprintf(value, sizeof(value), weatherValid ? "%d%%  %.1fmm" : "--", weatherValid ? outdoorPrecipProbability : 0, weatherValid ? outdoorPrecipMm : 0.0f);
       drawValueBox(29, 136, 88, 12, HUB_PANEL, HUB_WHITE, 1, value);
     }
