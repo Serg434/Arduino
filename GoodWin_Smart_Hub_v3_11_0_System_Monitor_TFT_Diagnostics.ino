@@ -20,7 +20,20 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <math.h>
-#include <esp32-hal-misc.h>
+#if __has_include(<esp32-hal-misc.h>)
+  #include <esp32-hal-misc.h>
+  #define GOODWIN_HAS_TEMPERATURE_READ 1
+#else
+  #define GOODWIN_HAS_TEMPERATURE_READ 0
+#endif
+
+static float goodwinReadChipTemperatureC() {
+#if GOODWIN_HAS_TEMPERATURE_READ
+  return temperatureRead();
+#else
+  return NAN;
+#endif
+}
 
 // ============================================================
 // GoodWin Smart Hub v3.11.0 System Monitor + TFT Diagnostics | ESP32 DevKit V1 | Arduino-ESP32 3.3.12
@@ -1459,7 +1472,7 @@ void publishMqttTelemetry() {
   pub("min_free_heap", String(ESP.getMinFreeHeap()));
   pub("largest_heap_block", String(ESP.getMaxAllocHeap()));
   pub("cpu_freq_mhz", String(ESP.getCpuFreqMHz()));
-  pub("chip_temp_c", String(temperatureRead(), 1));
+  pub("chip_temp_c", (isnan(goodwinReadChipTemperatureC()) ? String("unknown") : String(goodwinReadChipTemperatureC(), 1)));
   pub("psram_free", String(ESP.getFreePsram()));
   pub("tft_fps", String(hubTestMeasuredFps));
   pub("tft_draw_us", String(hubTestDrawUsLast));
@@ -1794,7 +1807,7 @@ void handleApi() {
 void handleSystemMetrics() {
   String json = "{";
   json += "\"cpuMHz\":" + String(ESP.getCpuFreqMHz()) + ",";
-  json += "\"chipTempC\":" + String(temperatureRead(), 1) + ",";
+  json += "\"chipTempC\":" + (isnan(goodwinReadChipTemperatureC()) ? String("unknown") : String(goodwinReadChipTemperatureC(), 1)) + ",";
   json += "\"freeHeap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"minFreeHeap\":" + String(ESP.getMinFreeHeap()) + ",";
   json += "\"largestHeap\":" + String(ESP.getMaxAllocHeap()) + ",";
