@@ -3789,7 +3789,6 @@ static void configureWeatherHttp(WiFiClientSecure &client, HTTPClient &https, co
   https.setTimeout(7000);
   https.setReuse(false);
   https.setUserAgent(agent);
-  https.addHeader("Accept", "application/json");
 }
 
 static bool fetchOpenMeteo(WeatherSnapshot &v) {
@@ -3956,6 +3955,8 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   HTTPClient https;
   // MET Norway requires a unique identifying User-Agent. The project URL is the identifier.
   configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (https://github.com/Serg434/Arduino)");
+  const char *responseHeaders[] = { "X-ErrorClass" };
+  https.collectHeaders(responseHeaders, 1);
   String url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
     String(WEATHER_LAT, 4) + "&lon=" + String(WEATHER_LON, 4);
   if (!https.begin(client, url)) {
