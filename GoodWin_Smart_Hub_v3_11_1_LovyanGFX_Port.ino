@@ -4040,7 +4040,7 @@ void weatherTask(void *parameter){
         if(!ok){setWeatherText("Резерв: wttr.in");LOG_W("Open-Meteo unavailable; trying wttr.in");if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");}
         if(!ok){setWeatherText("Резерв: MET Norway");LOG_W("wttr.in unavailable; trying MET Norway");if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");}
       }else if(mode==1){
-        weatherStatus="Запрос Open-Meteo";
+        setWeatherText("Запрос Open-Meteo");
         if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
       }else if(mode==2){
         setWeatherText("Запрос wttr.in");
