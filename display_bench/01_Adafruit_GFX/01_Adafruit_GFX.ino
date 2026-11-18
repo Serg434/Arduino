@@ -38,11 +38,11 @@ uint32_t transferTotalUs = 0;
 uint32_t transferMaxUs = 0;
 uint32_t fullTotalUs = 0;
 uint32_t fullMaxUs = 0;
+uint32_t fullCount = 0;
 uint32_t lastFullTest = 0;
 bool runFullScreenTest = false;
 
 static void drawStaticScene() {
-  tft.fillScreen(ST77XX_BLACK);
   tft.drawRect(0, 0, TFT_W, TFT_H, ST77XX_CYAN);
   tft.drawFastHLine(0, 39, TFT_W, ST77XX_BLUE);
   tft.drawFastHLine(0, 119, TFT_W, ST77XX_BLUE);
@@ -58,7 +58,7 @@ static void drawStaticScene() {
 }
 
 static void drawPatch(uint32_t frame) {
-  const uint16_t bg = (frame & 1) ? 0x0841 : 0x1082;
+  const uint16_t bg = 0x0841; // Fixed background: avoid intentional frame-to-frame flicker
   patchCanvas.fillScreen(bg);
   patchCanvas.drawRect(0, 0, TFT_W, PATCH_H, ST77XX_CYAN);
   patchCanvas.setTextSize(1);
@@ -87,11 +87,12 @@ static void reportStats() {
     renderMaxUs,
     frames ? transferTotalUs / frames : 0,
     transferMaxUs,
-    frames ? fullTotalUs / frames : 0,
+    fullCount ? fullTotalUs / fullCount : 0,
     fullMaxUs,
-    freeHeap, minHeap, largest, frames
+    freeHeap, minHeap, largest, frames, fullCount
   );
   frames = 0;
+  fullCount = 0;
   renderTotalUs = renderMaxUs = 0;
   transferTotalUs = transferMaxUs = 0;
   fullTotalUs = fullMaxUs = 0;
@@ -109,6 +110,7 @@ void setup() {
   tft.initR(INITR_BLACKTAB);
   tft.setSPISpeed(SPI_HZ);
   tft.setRotation(0);
+  tft.fillScreen(ST77XX_BLACK);
   drawStaticScene();
 
   Serial.println();
@@ -153,12 +155,13 @@ void loop() {
   if (runFullScreenTest && millis() - lastFullTest >= 1000) {
     lastFullTest = millis();
     t0 = micros();
-    tft.fillScreen((frame & 1) ? ST77XX_BLACK : ST77XX_BLUE);
+    tft.fillScreen(ST77XX_BLACK);
     drawStaticScene();
     tft.drawRGBBitmap(0, 40, patchCanvas.getBuffer(), TFT_W, PATCH_H);
     t1 = micros();
     const uint32_t dt = t1 - t0;
     fullTotalUs += dt;
+    fullCount++;
     if (dt > fullMaxUs) fullMaxUs = dt;
   }
 
