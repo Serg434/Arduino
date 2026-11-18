@@ -2587,6 +2587,7 @@ static constexpr uint16_t HUB_GREEN    = 0x5F76;
 static constexpr uint16_t HUB_YELLOW   = 0xFEA0;
 static constexpr uint16_t HUB_ORANGE   = 0xFC20;
 static constexpr uint16_t HUB_RED      = 0xF986;
+static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t bg, uint16_t fg, uint8_t textSize, const char *value);
 
 void hubCard(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t fill, uint16_t edge=HUB_LINE) {
   hubTFT.fillRoundRect(x, y, w, h, 7, fill);
@@ -2722,7 +2723,7 @@ void drawSmartHub() {
     hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(51,58); hubTFT.print("ROOM");
     char v[18]; snprintf(v,sizeof(v),sensorValid?"%.1fC":"--.-C",sensorValid?indoorTempC:0.0f);
     drawValueBox(28,70,72,22,HUB_BG,HUB_WHITE,2,v);
-    snprintf(v,sizeof(v),sensorValid?"%.0f%% RH":"--% RH",sensorValid?indoorHumidity:0.0f);
+    snprintf(v,sizeof(v),sensorValid?"%.0f%% RH":"--%% RH",sensorValid?indoorHumidity:0.0f);
     drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,v);
     hubCard(5,122,57,31,HUB_PANEL); hubCard(66,122,57,31,HUB_PANEL2);
     hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_PANEL); hubTFT.setCursor(10,126); hubTFT.print("OUTSIDE");
@@ -2918,7 +2919,7 @@ static void drawLayoutSensorPartial() {
   char value[20];
   if (hubLayoutId == 8) {
     snprintf(value,sizeof(value),sensorValid?"%.1fC":"--.-C",sensorValid?indoorTempC:0.0f); drawValueBox(28,70,72,22,HUB_BG,HUB_WHITE,2,value);
-    snprintf(value,sizeof(value),sensorValid?"%.0f%% RH":"--% RH",sensorValid?indoorHumidity:0.0f); drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,value); return;
+    snprintf(value,sizeof(value),sensorValid?"%.0f%% RH":"--%% RH",sensorValid?indoorHumidity:0.0f); drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,value); return;
   }
   if (hubLayoutId == 9) {
     snprintf(value,sizeof(value),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(72,47,48,13,HUB_BG,HUB_GREEN,1,value);
