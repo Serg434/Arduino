@@ -95,6 +95,7 @@ void resetStats() {
   renderMaxUs = 0;
   patchTxMaxUs = 0;
   fullMaxUs = 0;
+  lastFullFrame = 0;
 }
 
 void printStats() {
@@ -153,11 +154,11 @@ void setup() {
   tft.setSPISpeed(20000000);
   tft.fillScreen(TFT_BLACK);
 
+  patch.setColorDepth(16);
   if (patch.createSprite(SCREEN_W, PATCH_H) == nullptr) {
     Serial.println("ERROR: sprite allocation failed");
     while (true) delay(1000);
   }
-  patch.setColorDepth(16);
 
   drawStaticScene();
   Serial.printf("SPRITE_BYTES=%lu\n", (unsigned long)(SCREEN_W * PATCH_H * 2));
