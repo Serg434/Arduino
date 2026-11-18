@@ -209,7 +209,8 @@ uint8_t hubSaverId = 0;
 uint8_t hubOrientation = 0; // ST7735 rotation: 0..3 (portrait, landscape, inverted portrait, inverted landscape)
 static constexpr uint8_t HUB_SAVER_COUNT = 12;
 static uint16_t hubSaverIdleSeconds = 60;
-static constexpr uint32_t HUB_SAVER_FRAME_MS = 33;
+static constexpr uint32_t HUB_SAVER_FRAME_MS = 40;
+static constexpr uint32_t HUB_DNA_FRAME_MS = 100;
 static uint32_t hubLastActivityAt = 0;
 static uint32_t hubSaverLastFrameAt = 0;
 static bool hubSaverActive = false;
@@ -2758,7 +2759,7 @@ void drawSmartHub() {
   static uint8_t previousLayout=255, previousOrientation=255;
   const int16_t w=hubTFT.width(), h=hubTFT.height();
   const bool landscape=w>h;
-  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubTFT.fillScreen(HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
+  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubInvalidateValueCache();hubTFT.fillScreen(HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
   const uint16_t tempColor=(sensorValid&&indoorTempC>=27.0f)?HUB_ORANGE:HUB_GREEN;
 
   if (hubLayoutId >= 10 && hubLayoutId <= 13) {
@@ -2994,10 +2995,34 @@ static void drawAnalogClockPartial() {
 
 // Render each changing value completely in RAM, then transfer the finished patch.
 // This removes the visible clear-then-print interval during telemetry refreshes. (5.8 KB RAM)
+struct HubValueCacheEntry {
+  bool valid;
+  int16_t x, y, w, h;
+  uint16_t bg, fg;
+  uint8_t textSize;
+  char value[32];
+};
+static HubValueCacheEntry hubValueCache[16] = {};
+static uint8_t hubValueCacheNext = 0;
+
+static void hubInvalidateValueCache() {
+  for (uint8_t i = 0; i < 16; ++i) hubValueCache[i].valid = false;
+}
+
 static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
                          uint16_t bg, uint16_t fg, uint8_t textSize,
                          const char *value) {
   if (w <= 0 || h <= 0 || !value) return;
+  // Do not transmit unchanged values. A changed value is always composed over
+  // a freshly restored background in the small RAM canvas before one SPI patch.
+  if (w <= HUB_VALUE_CANVAS_W && h <= HUB_VALUE_CANVAS_H) {
+    for (uint8_t i = 0; i < 16; ++i) {
+      HubValueCacheEntry &entry = hubValueCache[i];
+      if (entry.valid && entry.x == x && entry.y == y && entry.w == w && entry.h == h &&
+          entry.bg == bg && entry.fg == fg && entry.textSize == textSize &&
+          strcmp(entry.value, value) == 0) return;
+    }
+  }
   if (w > HUB_VALUE_CANVAS_W || h > HUB_VALUE_CANVAS_H) {
     // Defensive fallback for future widgets larger than the reusable patch.
     hubTFT.fillRect(x, y, w, h, bg);
@@ -3030,6 +3055,10 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
     hubTFT.writePixels(pixels + (size_t)row * HUB_VALUE_CANVAS_W, w, true);
   }
   hubTFT.endWrite();
+  HubValueCacheEntry &entry = hubValueCache[hubValueCacheNext++ % 16];
+  entry.valid = true; entry.x = x; entry.y = y; entry.w = w; entry.h = h;
+  entry.bg = bg; entry.fg = fg; entry.textSize = textSize;
+  strlcpy(entry.value, value, sizeof(entry.value));
 }
 
 static void drawLayoutSensorPartial() {
@@ -3170,8 +3199,11 @@ void hubMarkActivity() {
   }
 }
 
+static void hubInvalidateValueCache();
+
 static void initHubScreenSaver() {
   const int16_t w = hubTFT.width(), h = hubTFT.height();
+  hubInvalidateValueCache();
   hubTFT.fillScreen(HUB_BG);
   saverDotX = w / 3; saverDotY = h / 3; saverDotVX = 2; saverDotVY = 1; saverDotRadius = 5;
   saverPulseRadius = 18; saverPulseDirection = 1;
@@ -3246,6 +3278,9 @@ static void drawHubScreenSaverFrame() {
       break;
     case 2: // Floating dot.
       hubTFT.fillCircle(saverDotX, saverDotY, saverDotRadius + 1, HUB_BG);
+      // The erase can overlap the decorative frame when the dot reaches an edge.
+      // Restore the frame before drawing the next dot position.
+      hubTFT.drawRoundRect(5, 5, w - 10, h - 10, 8, HUB_LINE);
       saverDotX += saverDotVX; saverDotY += saverDotVY;
       if (saverDotX < saverDotRadius + 7 || saverDotX > w - saverDotRadius - 7) saverDotVX = -saverDotVX;
       if (saverDotY < saverDotRadius + 7 || saverDotY > h - saverDotRadius - 7) saverDotVY = -saverDotVY;
@@ -3277,7 +3312,8 @@ static void drawHubScreenSaverFrame() {
     case 6: // Clouds: move a compact cloud shape across the screen.
       for (uint8_t i = 0; i < 2; ++i) {
         const int16_t y = h / 2 - 12 + i * 28;
-        hubTFT.fillRect(saverCloudX[i] - 2, y - 8, 43, 23, HUB_BG);
+        // Cloud silhouette reaches y-15 at its crown; erase the complete previous bounds.
+        hubTFT.fillRect(saverCloudX[i] - 3, y - 16, 45, 32, HUB_BG);
         saverCloudX[i] += (i == 0 ? 1 : 2);
         if (saverCloudX[i] > w + 5) saverCloudX[i] = -42;
         int16_t x = saverCloudX[i];
@@ -3320,15 +3356,15 @@ static void drawHubScreenSaverFrame() {
       const uint32_t frame = millis();
       const int16_t top = 25, bottom = h - 18;
       const int16_t mid = (top + bottom) / 2;
-      const float phase = frame * 0.0042f;
-      // Clear only the animation viewport; the title/footer remain static.
-      hubTFT.fillRect(0, top, w, bottom - top, HUB_BG);
+      const float phase = frame * 0.0011f; // slower axial rotation; avoid the rapid flicker of the first prototype
+      // The ST7735 has no framebuffer: keep the animated viewport compact and redraw at 10 FPS.
+      hubTFT.fillRect(18, top, w - 36, bottom - top, HUB_BG);
       // A dim molecular grid and softly moving scanline create depth without a framebuffer.
       for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(9, y, w - 18, 0x1082);
       const int16_t scanY = top + (int16_t)((frame / 38U) % (bottom - top));
       hubTFT.drawFastHLine(10, scanY, w - 20, 0x2127);
       int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
-      for (int16_t y = top + 5; y < bottom - 3; y += 2) {
+      for (int16_t y = top + 5; y < bottom - 3; y += 3) {
         const float t = (float)(y - top) * 0.105f + phase;
         const float wave = sinf(t);
         const float depth = cosf(t);
@@ -3353,7 +3389,7 @@ static void drawHubScreenSaverFrame() {
         prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
       }
       // Floating energy motes orbit the strands; deterministic motion avoids random() cost.
-      for (uint8_t i = 0; i < 7; ++i) {
+      for (uint8_t i = 0; i < 4; ++i) {
         const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
         const int16_t x = w / 2 + (int16_t)(sinf(p) * (31.0f + (i % 3) * 4.0f));
         const int16_t y = top + 10 + (int16_t)((((frame / (22U + i * 3U)) + i * 19U) % (uint32_t)(bottom - top - 18)));
@@ -3451,7 +3487,8 @@ void updateSmartHub() {
       drawSmartHub();
       return;
     }
-    if (now - hubSaverLastFrameAt >= HUB_SAVER_FRAME_MS) {
+    const uint32_t saverInterval = hubSaverId == 11 ? HUB_DNA_FRAME_MS : HUB_SAVER_FRAME_MS;
+    if (now - hubSaverLastFrameAt >= saverInterval) {
       hubSaverLastFrameAt = now;
       drawHubScreenSaverFrame();
       recordTftFrame();
