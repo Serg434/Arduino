@@ -20,6 +20,19 @@
 #include <ArduinoJson.h>
 #include <time.h>
 #include <math.h>
+
+// The selected Arduino target supplies the board profile. Runtime silicon
+// identification below is read from the ESP32 itself.
+#if defined(ARDUINO_BOARD)
+  #define GOODWIN_BOARD_PROFILE ARDUINO_BOARD
+#elif defined(ARDUINO_VARIANT)
+  #define GOODWIN_BOARD_PROFILE ARDUINO_VARIANT
+#elif defined(CONFIG_IDF_TARGET_ESP32)
+  #define GOODWIN_BOARD_PROFILE "ESP32 generic target"
+#else
+  #define GOODWIN_BOARD_PROFILE "Unknown Arduino board profile"
+#endif
+
 #if __has_include(<esp32-hal-misc.h>)
   #include <esp32-hal-misc.h>
   #define GOODWIN_HAS_TEMPERATURE_READ 1
@@ -36,7 +49,7 @@ static float goodwinReadChipTemperatureC() {
 }
 
 // ============================================================
-// GoodWin Smart Hub v3.11.0 System Monitor + TFT Diagnostics | ESP32 DevKit V1 | Arduino-ESP32 3.3.12
+// GoodWin Smart Hub v3.11.1-dev | buffered TFT value patches + hardware auto-detection
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
 // Climate endpoint advertises the standard Temperature Sensor device type and exposes
 // Relative Humidity Measurement as an additional server cluster on the same endpoint.
@@ -146,10 +159,11 @@ static constexpr uint8_t TFT_BACKLIGHT_PERCENT = 85;
 
 SPIClass hubSPI(VSPI);
 Adafruit_ST7735 hubTFT(&hubSPI, TFT1_CS, TFT1_DC, TFT1_RST);
-// Draw directly to the ST7735, as in the last known-working v2 renderer.
-// No full-frame canvas: saves 40 KB of internal DRAM and avoids a second
-// framebuffer-to-display transfer path. All drawing primitives go straight
-// to the SPI TFT.
+// Small reusable RGB565 canvas for dynamic widgets only: 114x34 = 7.7 KB.
+// The full-screen 128x160 framebuffer would require 40 KB.
+static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
+static constexpr int16_t HUB_VALUE_CANVAS_H = 34;
+static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
 static volatile bool hubDisplayDirty = true; // full redraw: boot, layout or structural change
 static volatile bool hubClockDirty = false;
 static volatile bool hubSensorDirty = false;
@@ -1011,7 +1025,15 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 <div class="power-actions full mqtt-actions"><button class="btn btn-primary" type="submit">Сохранить настройки</button><button class="btn" type="button" id="mqttTestButton" onclick="testMqtt()">Проверить соединение</button></div>
 </form><div class="pair-note">Укажи локальный IP Home Assistant, а не внешний URL. Стандартный порт Mosquitto — 1883. Пароль хранится во flash ESP32 и никогда не выводится обратно в веб-интерфейс. Matter работает независимо от MQTT.</div></section>
 <section class="card section system-monitor"><div class="section-head"><div><div class="eyebrow">LIVE TELEMETRY</div><h2>Системный монитор</h2></div><span id="sysMonitorState">LIVE · 2 СЕК</span></div><div class="system-grid">
-<div class="status-item"><div class="status-label">Частота CPU</div><div class="status-value" id="sysCpu">—</div></div><div class="status-item"><div class="status-label">Температура чипа</div><div class="status-value" id="sysTemp">—</div></div><div class="status-item"><div class="status-label">Свободная Heap</div><div class="status-value" id="sysHeap">—</div></div><div class="status-item"><div class="status-label">Минимальная Heap</div><div class="status-value" id="sysMinHeap">—</div></div><div class="status-item"><div class="status-label">Крупнейший блок Heap</div><div class="status-value" id="sysLargest">—</div></div><div class="status-item"><div class="status-label">Свободная PSRAM</div><div class="status-value" id="sysPsram">—</div></div><div class="status-item"><div class="status-label">Flash</div><div class="status-value" id="sysFlash">—</div></div><div class="status-item"><div class="status-label">Wi-Fi RSSI</div><div class="status-value" id="sysRssi">—</div></div><div class="status-item"><div class="status-label">Время работы</div><div class="status-value" id="sysUptime">—</div></div><div class="status-item"><div class="status-label">TFT FPS</div><div class="status-value" id="sysFps">—</div></div><div class="status-item"><div class="status-label">Время отрисовки TFT</div><div class="status-value" id="sysTftDraw">—</div></div><div class="status-item"><div class="status-label">Режим теста</div><div class="status-value" id="sysTftPhase">—</div></div></div><div class="log-hint">Температура — внутренний датчик ESP32, ориентировочная. PSRAM может отсутствовать на этой плате.</div></section>
+<div class="status-item"><div class="status-label">Частота CPU</div><div class="status-value" id="sysCpu">—</div></div><div class="status-item"><div class="status-label">Температура чипа</div><div class="status-value" id="sysTemp">—</div></div><div class="status-item"><div class="status-label">Свободная Heap</div><div class="status-value" id="sysHeap">—</div></div><div class="status-item"><div class="status-label">Минимальная Heap</div><div class="status-value" id="sysMinHeap">—</div></div><div class="status-item"><div class="status-label">Крупнейший блок Heap</div><div class="status-value" id="sysLargest">—</div></div><div class="status-item"><div class="status-label">Свободная PSRAM</div><div class="status-value" id="sysPsram">—</div></div><div class="status-item"><div class="status-label">Flash</div><div class="status-value" id="sysFlash">—</div></div><div class="status-item"><div class="status-label">Wi-Fi RSSI</div><div class="status-value" id="sysRssi">—</div></div><div class="status-item"><div class="status-label">Время работы</div><div class="status-value" id="sysUptime">—</div></div><div class="status-item"><div class="status-label">TFT FPS</div><div class="status-value" id="sysFps">—</div></div><div class="status-item"><div class="status-label">Время отрисовки TFT</div><div class="status-value" id="sysTftDraw">—</div></div><div class="status-item"><div class="status-label">Режим теста</div><div class="status-value" id="sysTftPhase">—</div></div></div>
+<div class="system-grid hardware-grid">
+<div class="status-item"><div class="status-label">Профиль платы</div><div class="status-value" id="sysBoard">—</div></div>
+<div class="status-item"><div class="status-label">Модель чипа</div><div class="status-value" id="sysChip">—</div></div>
+<div class="status-item"><div class="status-label">Ревизия / ядра</div><div class="status-value" id="sysChipInfo">—</div></div>
+<div class="status-item"><div class="status-label">Частота Flash</div><div class="status-value" id="sysFlashSpeed">—</div></div>
+<div class="status-item"><div class="status-label">ESP-IDF</div><div class="status-value" id="sysSdk">—</div></div>
+<div class="status-item"><div class="status-label">Размер прошивки</div><div class="status-value" id="sysSketch">—</div></div>
+</div><div class="log-hint">Модель и ревизия определяются по ESP-чипу. Профиль платы берётся из конфигурации Arduino: точную маркировку PCB программно определить нельзя. Температура — внутренний датчик ESP32, если он поддерживается ядром.</div></section>
 <section class="card section" id="serialMonitor"><div class="section-head"><div><div class="eyebrow">ON-DEMAND DIAGNOSTICS</div><h2>Журнал диагностики</h2></div><span id="logState">ВЫКЛЮЧЕН</span></div>
 <div class="log-toolbar"><label class="log-toggle"><input id="logAutoScroll" type="checkbox" checked> Автопрокрутка</label><div class="log-actions"><button class="btn btn-primary" type="button" id="logStart">Запустить</button><button class="btn" type="button" id="logStop" disabled>Остановить</button><button class="btn" type="button" id="logClear">Очистить</button></div></div>
 <pre class="log-terminal" id="serialLog"><span class="log-empty">Диагностика выключена. Нажми «Запустить», чтобы временно собирать логи.</span></pre>
@@ -1271,7 +1293,7 @@ async function updateHubTelemetry(){
   document.getElementById('hubWeatherState').textContent=(d.weatherStatus||'Нет статуса')+' · '+(d.weatherSource||'—');const ws=document.getElementById('hubWeatherSource');if(ws&&ws.value!==String(d.weatherMode??0))ws.value=String(d.weatherMode??0);
  }catch(e){document.getElementById('hubWeatherState').textContent='Нет связи с ESP32';}
 }
-async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=(d.chipTempC===null||d.chipTempC===undefined||!Number.isFinite(Number(d.chipTempC)))?"недоступно":Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ · "+(e&&e.message?e.message:"ошибка запроса");}}
+async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=(d.chipTempC===null||d.chipTempC===undefined||!Number.isFinite(Number(d.chipTempC)))?"недоступно":Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysBoard").textContent=d.boardProfile||"—";document.getElementById("sysChip").textContent=d.chipModel||"—";document.getElementById("sysChipInfo").textContent=(d.chipRevision??"—")+" · "+(d.chipCores??"—")+" ядра";document.getElementById("sysFlashSpeed").textContent=d.flashSpeedMHz?d.flashSpeedMHz+" MHz":"—";document.getElementById("sysSdk").textContent=d.sdkVersion||"—";document.getElementById("sysSketch").textContent=mb(d.sketchSize)+" / свободно "+mb(d.freeSketchSpace);document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ · "+(e&&e.message?e.message:"ошибка запроса");}}
 loadHubConfig();updateHubTelemetry();updateSystemMonitor();setInterval(updateSystemMonitor,2000);setInterval(updateHubTelemetry,5000);setInterval(()=>{if(document.querySelector('[data-panel=\"screen\"].active'))loadHubConfig(true);},2000);
 
 </script>
@@ -1822,6 +1844,14 @@ void handleSystemMetrics() {
   json += "\"psramTotal\":" + String(ESP.getPsramSize()) + ",";
   json += "\"psramFree\":" + String(ESP.getFreePsram()) + ",";
   json += "\"flashSize\":" + String(ESP.getFlashChipSize()) + ",";
+  json += "\"boardProfile\":\"" + jsonEscape(String(GOODWIN_BOARD_PROFILE)) + "\",";
+  json += "\"chipModel\":\"" + jsonEscape(String(ESP.getChipModel())) + "\",";
+  json += "\"chipRevision\":" + String(ESP.getChipRevision()) + ",";
+  json += "\"chipCores\":" + String(ESP.getChipCores()) + ",";
+  json += "\"flashSpeedMHz\":" + String(ESP.getFlashChipSpeed() / 1000000UL) + ",";
+  json += "\"sdkVersion\":\"" + jsonEscape(String(ESP.getSdkVersion())) + "\",";
+  json += "\"sketchSize\":" + String(ESP.getSketchSize()) + ",";
+  json += "\"freeSketchSpace\":" + String(ESP.getFreeSketchSpace()) + ",";
   json += "\"uptime\":" + String(millis() / 1000UL) + ",";
   json += "\"wifiRssi\":" + String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127) + ",";
   json += "\"tftFps\":" + String(hubTestMeasuredFps) + ",";
@@ -2901,17 +2931,36 @@ static void drawAnalogClockPartial() {
   hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor((hubTFT.width() - 48) / 2, landscape ? 117 : 148); hubTFT.print(dateText.substring(0, 5));
 }
 
-// Value-only TFT refresh. Static cards, borders, labels and icons are drawn once
-// by drawSmartHub(). Telemetry updates clear only the small glyph rectangle and
-// print the new value; no card/background is repainted during normal operation.
+// Render each changing value completely in RAM, then transfer the finished patch.
+// This removes the visible clear-then-print interval during telemetry refreshes.
 static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
                          uint16_t bg, uint16_t fg, uint8_t textSize,
                          const char *value) {
-  hubTFT.fillRect(x, y, w, h, bg);
-  hubTFT.setTextSize(textSize);
-  hubTFT.setTextColor(fg, bg);
-  hubTFT.setCursor(x + 2, y + 2);
-  hubTFT.print(value);
+  if (w <= 0 || h <= 0 || !value) return;
+  if (w > HUB_VALUE_CANVAS_W || h > HUB_VALUE_CANVAS_H) {
+    // Defensive fallback for future widgets larger than the reusable patch.
+    hubTFT.fillRect(x, y, w, h, bg);
+    hubTFT.setTextSize(textSize);
+    hubTFT.setTextColor(fg, bg);
+    hubTFT.setCursor(x + 2, y + 2);
+    hubTFT.print(value);
+    return;
+  }
+  hubValueCanvas.fillScreen(bg);
+  hubValueCanvas.setTextWrap(false);
+  hubValueCanvas.setTextSize(textSize);
+  hubValueCanvas.setTextColor(fg, bg);
+  hubValueCanvas.setCursor(2, 2);
+  hubValueCanvas.print(value);
+  uint16_t *pixels = hubValueCanvas.getBuffer();
+  if (!pixels) return;
+  // Single address window; source rows use the canvas' fixed 114-pixel stride.
+  hubTFT.startWrite();
+  hubTFT.setAddrWindow(x, y, w, h);
+  for (int16_t row = 0; row < h; ++row) {
+    hubTFT.writePixels(pixels + (size_t)row * HUB_VALUE_CANVAS_W, w, true);
+  }
+  hubTFT.endWrite();
 }
 
 static void drawLayoutSensorPartial() {
@@ -3609,10 +3658,14 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("[BOOT] GoodWin Smart Hub v3.11.0 - Serial console ready @115200");
+  Serial.println("[BOOT] GoodWin Smart Hub v3.11.1-dev - Serial console ready @115200");
   Serial.flush();
   previousEspLogVprintf = esp_log_set_vprintf(webEspLogVprintf);
   LOG_B("GoodWin Smart Hub booting");
+  LOG_B("Hardware: board-profile=%s chip=%s rev=%u cores=%u CPU=%uMHz Flash=%uMB @%uMHz PSRAM=%uKB ESP-IDF=%s",
+    GOODWIN_BOARD_PROFILE, ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
+    ESP.getCpuFreqMHz(), ESP.getFlashChipSize() / (1024UL * 1024UL),
+    ESP.getFlashChipSpeed() / 1000000UL, ESP.getPsramSize() / 1024UL, ESP.getSdkVersion());
   setupSmartHubDisplay();
   configTzTime("YEKT-5", "pool.ntp.org", "time.google.com", "time.cloudflare.com");
   statePrefs.begin("hubcfg", true);
