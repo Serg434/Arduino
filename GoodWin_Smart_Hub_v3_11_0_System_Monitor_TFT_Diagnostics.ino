@@ -2778,7 +2778,7 @@ void drawSmartHub() {
     hubTFT.setTextColor(HUB_MUTED, panel); hubTFT.setCursor(14, 73); hubTFT.print("INDOOR");
     char v[18]; snprintf(v, sizeof(v), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
     drawValueBox(14, 84, 55, 15, panel, HUB_WHITE, 1, v);
-    snprintf(v, sizeof(v), sensorValid ? "%.0f%% RH" : "--% RH", sensorValid ? indoorHumidity : 0.0f);
+    snprintf(v, sizeof(v), sensorValid ? "%.0f%% RH" : "--%% RH", sensorValid ? indoorHumidity : 0.0f);
     drawValueBox(w - 66, 84, 52, 15, panel, accent, 1, v);
     hubCard(8, 108, (w - 22) / 2, 36, HUB_PANEL);
     hubCard(14 + (w - 22) / 2, 108, (w - 22) / 2, 36, HUB_PANEL2);
