@@ -3377,6 +3377,9 @@ static void drawHubScreenSaverFrame() {
     case 9: { // Pulse: erase only the previous filled circle and draw the next one.
       const int16_t cx = w / 2, cy = h / 2;
       hubTFT.fillCircle(cx, cy, saverPulseRadius, HUB_BG);
+      // The pulse overlaps the decorative rings; restore them after erasing the old disk.
+      hubTFT.drawCircle(cx, cy, 40, HUB_LINE);
+      hubTFT.drawCircle(cx, cy, 34, HUB_LINE);
       saverPulseRadius = (uint8_t)(saverPulseRadius + saverPulseDirection * 2);
       if (saverPulseRadius >= 34) { saverPulseRadius = 34; saverPulseDirection = -1; }
       if (saverPulseRadius <= 12) { saverPulseRadius = 12; saverPulseDirection = 1; }
