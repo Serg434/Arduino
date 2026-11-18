@@ -2746,6 +2746,9 @@ void hubClockFace(int16_t cx,int16_t cy,int16_t r){
 }
 
 void drawSmartHub() {
+  // A full layout render may repaint cards/labels underneath value widgets.
+  // Invalidate their snapshots so every value is restored over its true background.
+  hubInvalidateValueCache();
   hubProgressNeedsInit = true;
   if (!hubDisplayEnabled) {
     static bool disabledLogged = false;
@@ -3185,6 +3188,33 @@ static void drawLayoutLightPartial() {
     }
   }
 }
+
+static void drawModernLayoutPartials() {
+  const int16_t w = hubTFT.width(), h = hubTFT.height();
+  const bool amber = hubLayoutId == 11;
+  const uint16_t accent = amber ? HUB_YELLOW : (hubLayoutId == 13 ? 0xF81F : HUB_CYAN);
+  const uint16_t panel = hubLayoutId == 12 ? 0x10A4 : HUB_PANEL;
+  char value[24];
+
+  // All live fields use the same checked patch renderer: unchanged text is
+  // skipped; changed text is composed over the correct panel/background.
+  drawValueBox(8, 29, 82, 18, HUB_BG, HUB_WHITE, 2, timeText.c_str());
+  drawValueBox(8, 51, 112, 10, HUB_BG, HUB_MUTED, 1, dateText.c_str());
+
+  snprintf(value, sizeof(value), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
+  drawValueBox(14, 84, 55, 15, panel, HUB_WHITE, 1, value);
+  snprintf(value, sizeof(value), sensorValid ? "%.0f%% RH" : "--%% RH", sensorValid ? indoorHumidity : 0.0f);
+  drawValueBox(w - 66, 84, 52, 15, panel, accent, 1, value);
+
+  snprintf(value, sizeof(value), weatherValid ? "%.1fC" : "--.-C", weatherValid ? outdoorTempC : 0.0f);
+  drawValueBox(12, 126, (w - 30) / 2, 13, HUB_PANEL, HUB_WHITE, 1, value);
+  snprintf(value, sizeof(value), weatherValid ? "%.0fkm/h" : "--km/h", weatherValid ? outdoorWindSpeedKmh : 0.0f);
+  drawValueBox(18 + (w - 22) / 2, 126, (w - 30) / 2, 13, HUB_PANEL2, accent, 1, value);
+
+  drawValueBox(10, h - 13, 62, 10, HUB_BG, accent, 1,
+               WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE");
+}
+
 // ============================================================
 // Low-flicker screen saver engine. The background is painted only when the
 // saver starts; animated frames touch only the moving object/strip.
@@ -3360,9 +3390,9 @@ static void drawHubScreenSaverFrame() {
       // The ST7735 has no framebuffer: keep the animated viewport compact and redraw at 10 FPS.
       hubTFT.fillRect(18, top, w - 36, bottom - top, HUB_BG);
       // A dim molecular grid and softly moving scanline create depth without a framebuffer.
-      for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(9, y, w - 18, 0x1082);
-      const int16_t scanY = top + (int16_t)((frame / 38U) % (bottom - top));
-      hubTFT.drawFastHLine(10, scanY, w - 20, 0x2127);
+      for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(20, y, w - 40, 0x1082);
+      const int16_t scanY = top + (int16_t)((frame / 90U) % (bottom - top));
+      hubTFT.drawFastHLine(20, scanY, w - 40, 0x2127);
       int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
       for (int16_t y = top + 5; y < bottom - 3; y += 3) {
         const float t = (float)(y - top) * 0.105f + phase;
@@ -3496,7 +3526,8 @@ void updateSmartHub() {
     return;
   }
 
-  if (hubLayoutId >= 10 && (hubClockDirty || hubSensorDirty || hubWeatherDirty || hubLightDirty)) hubDisplayDirty = true;
+  // Prototype layouts 10..13 are updated through checked value patches below;
+  // telemetry changes must not trigger a complete screen repaint.
   if (hubDisplayDirty && now - lastTftDrawAt >= 33) {
     hubDisplayDirty = false; hubClockDirty = false; hubSensorDirty = false; hubWeatherDirty = false; hubLightDirty = false;
     lastTftDrawAt = now;
@@ -3545,6 +3576,16 @@ void updateSmartHub() {
   // Do not paint telemetry over the black screen when the display endpoint is off.
   if (!hubDisplayEnabled) { hubClockDirty = false; hubSensorDirty = false; hubWeatherDirty = false; hubLightDirty = false; return; }
   if (now - lastTftDrawAt < 33) return;
+  if (hubLayoutId >= 10 && hubLayoutId <= 13 &&
+      (hubClockDirty || hubSensorDirty || hubWeatherDirty || hubLightDirty)) {
+    hubClockDirty = hubSensorDirty = hubWeatherDirty = hubLightDirty = false;
+    const uint32_t patchStartedAt = micros();
+    drawModernLayoutPartials();
+    lastTftDrawAt = now;
+    LOG_S("TFT checked value patches completed in %lu ms", (unsigned long)((micros() - patchStartedAt) / 1000UL));
+    recordTftFrame();
+    return;
+  }
   bool drew = false;
   const uint32_t partialRenderStartedAt = micros();
   if (hubClockDirty) {
