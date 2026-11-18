@@ -153,11 +153,9 @@ void loop() {
   if (runFullScreenTest && millis() - lastFullTest >= 1000) {
     lastFullTest = millis();
     t0 = micros();
-    tft.fillRect(0, 40, TFT_W, 80, (frame & 1) ? ST77XX_BLACK : ST77XX_BLUE);
+    tft.fillScreen((frame & 1) ? ST77XX_BLACK : ST77XX_BLUE);
+    drawStaticScene();
     tft.drawRGBBitmap(0, 40, patchCanvas.getBuffer(), TFT_W, PATCH_H);
-    tft.drawRGBBitmap(0, 60, patchCanvas.getBuffer(), TFT_W, PATCH_H);
-    tft.drawRGBBitmap(0, 80, patchCanvas.getBuffer(), TFT_W, PATCH_H);
-    tft.drawRGBBitmap(0, 100, patchCanvas.getBuffer(), TFT_W, PATCH_H);
     t1 = micros();
     const uint32_t dt = t1 - t0;
     fullTotalUs += dt;
