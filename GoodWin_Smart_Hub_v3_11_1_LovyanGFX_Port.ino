@@ -61,7 +61,7 @@ static const char *goodwinFlashModeName(FlashMode_t mode) {
 }
 
 // ============================================================
-// GoodWin Smart Hub v3.11.1-dev LovyanGFX port | DMA TFT value patches + hardware auto-detection
+// GoodWin Smart Hub v3.11.1-dev LovyanGFX port | DMA partial UI + buffered screensavers + resilient weather
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
 // Climate endpoint advertises the standard Temperature Sensor device type and exposes
 // Relative Humidity Measurement as an additional server cluster on the same endpoint.
@@ -219,6 +219,9 @@ GoodWinTFT hubTFT;
 static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
 static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
 static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
+// Shared off-screen animation canvas: DNA, wave and aurora are composed off-screen
+// and transferred as one image to avoid visible clear-then-redraw flicker.
+static GFXcanvas16 *hubSaverCanvas = nullptr;
 static volatile bool hubDisplayDirty = true; // full redraw: boot, layout or structural change
 static volatile bool hubClockDirty = false;
 static volatile bool hubSensorDirty = false;
@@ -281,6 +284,11 @@ static float lastMatterHumidity = NAN;
 String weatherStatus = "Ожидание";
 String weatherProvider = "—";
 static volatile uint8_t weatherSourceMode = 0; // 0=Auto, 1=Open-Meteo, 2=wttr.in, 3=MET Norway
+static uint32_t weatherOpenMeteoLastAttemptAt = 0;
+static uint32_t weatherWttrLastAttemptAt = 0;
+static uint32_t weatherMetNoLastAttemptAt = 0;
+static constexpr uint32_t WEATHER_WTTR_COOLDOWN_MS = 10UL * 60UL * 1000UL;
+static constexpr uint32_t WEATHER_METNO_COOLDOWN_MS = 30UL * 60UL * 1000UL;
 static uint8_t hubTestFpsTarget = 20;
 static uint32_t hubTestLastFrameAt = 0;
 static uint32_t hubTestFpsWindowAt = 0;
@@ -1725,6 +1733,10 @@ void setupMqtt() {
   mqttClient.setCallback(mqttCallback);
   mqttClient.setBufferSize(4096);
   mqttClient.setKeepAlive(30);
+  // PubSubClient is synchronous: bound socket waits so a missing broker cannot
+  // freeze the main UI loop for the library's long default timeout.
+  mqttNetwork.setTimeout(1000);
+  mqttClient.setSocketTimeout(1);
   if (mqttConfigured()) {
     mqttClient.setServer(mqttHost.c_str(), mqttPort);
     mqttLastError = "Ожидание подключения";
@@ -1769,7 +1781,7 @@ void mqttLoop() {
   if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) return;
   static uint32_t lastAttempt = 0;
   if (!mqttClient.connected()) {
-    if (millis() - lastAttempt < 7000) return;
+    if (millis() - lastAttempt < 30000) return;
     lastAttempt = millis();
     mqttConnectNow();
   }
@@ -3278,6 +3290,17 @@ static void hubInvalidateValueCache();
 
 static void initHubScreenSaver() {
   const int16_t w = hubTFT.width(), h = hubTFT.height();
+  if ((hubSaverId == 8 || hubSaverId == 10 || hubSaverId == 11) && !hubSaverCanvas) {
+    hubSaverCanvas = new GFXcanvas16(128, 117);
+    if (!hubSaverCanvas || !hubSaverCanvas->getBuffer()) {
+      delete hubSaverCanvas;
+      hubSaverCanvas = nullptr;
+      LOG_ERR("Saver off-screen canvas allocation failed; heap=%u", ESP.getFreeHeap());
+    } else {
+      LOG_B("Saver off-screen canvas ready: 128x117, %u bytes; free heap=%u",
+            (unsigned)(128U * 117U * sizeof(uint16_t)), ESP.getFreeHeap());
+    }
+  }
   hubInvalidateValueCache();
   hubTFT.fillScreen(HUB_BG);
   saverDotX = w / 3; saverDotY = h / 3; saverDotVX = 2; saverDotVY = 1; saverDotRadius = 5;
@@ -3408,13 +3431,26 @@ static void drawHubScreenSaverFrame() {
         drawValueBox((w - 86) / 2, h / 2 + 10, 86, 19, HUB_BG, HUB_CYAN, 2, value);
       }
       break;
-    case 8: { // Wave: redraw only a narrow horizontal band.
-      const int16_t mid = h / 2; const float phase = millis() * 0.004f;
-      hubTFT.fillRect(0, mid - 23, w, 47, HUB_BG);
-      for (int16_t x = 0; x < w - 1; ++x) {
-        int16_t y1 = mid + (int16_t)(sinf((x * 0.09f) + phase) * 15.0f);
-        int16_t y2 = mid + (int16_t)(sinf(((x + 1) * 0.09f) + phase) * 15.0f);
-        hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
+    case 8: { // Wave: compose off-screen and transfer the band as one image.
+      const int16_t mid = h / 2;
+      const int16_t bandTop = mid - 23;
+      const float phase = millis() * 0.004f;
+      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
+        hubSaverCanvas->fillScreen(HUB_BG);
+        for (int16_t x = 0; x < w - 1; ++x) {
+          int16_t y1 = 23 + (int16_t)(sinf((x * 0.09f) + phase) * 15.0f);
+          int16_t y2 = 23 + (int16_t)(sinf(((x + 1) * 0.09f) + phase) * 15.0f);
+          hubSaverCanvas->drawLine(x, y1, x + 1, y2, HUB_CYAN);
+        }
+        hubTFT.pushImage(0, bandTop, 128, 47, hubSaverCanvas->getBuffer());
+        hubTFT.waitDMA();
+      } else {
+        hubTFT.fillRect(0, bandTop, w, 47, HUB_BG);
+        for (int16_t x = 0; x < w - 1; ++x) {
+          int16_t y1 = mid + (int16_t)(sinf((x * 0.09f) + phase) * 15.0f);
+          int16_t y2 = mid + (int16_t)(sinf(((x + 1) * 0.09f) + phase) * 15.0f);
+          hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
+        }
       }
       break;
     }
@@ -3430,65 +3466,108 @@ static void drawHubScreenSaverFrame() {
       hubTFT.fillCircle(cx, cy, saverPulseRadius, HUB_CYAN);
       break;
     }
-    case 11: { // DNA: animated 3D double helix, optimized for 128x160 ST7735.
+    case 11: { // DNA: off-screen 3D double helix; one atomic transfer per frame.
       const uint32_t frame = millis();
       const int16_t top = 25, bottom = h - 18;
-      const int16_t mid = (top + bottom) / 2;
-      const float phase = frame * 0.0011f; // slower axial rotation; avoid the rapid flicker of the first prototype
-      // The ST7735 has no framebuffer: keep the animated viewport compact and redraw at 10 FPS.
-      hubTFT.fillRect(18, top, w - 36, bottom - top, HUB_BG);
-      // A dim molecular grid and softly moving scanline create depth without a framebuffer.
-      for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(20, y, w - 40, 0x1082);
-      const int16_t scanY = top + (int16_t)((frame / 90U) % (bottom - top));
-      hubTFT.drawFastHLine(20, scanY, w - 40, 0x2127);
-      int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
-      for (int16_t y = top + 5; y < bottom - 3; y += 3) {
-        const float t = (float)(y - top) * 0.105f + phase;
-        const float wave = sinf(t);
-        const float depth = cosf(t);
-        const int16_t spread = 20 + (int16_t)(depth * 3.0f);
-        const int16_t ax = w / 2 + (int16_t)(wave * spread);
-        const int16_t bx = w / 2 - (int16_t)(wave * spread);
-        const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF;
-        const uint16_t cb = depth > 0 ? HUB_CYAN : 0xF81F;
-        if (y > top + 5) {
-          if ((y % 10) == 0) hubTFT.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
-          hubTFT.drawLine(prevAx, prevAy, ax, y, ca);
-          hubTFT.drawLine(prevBx, prevBy, bx, y, cb);
+      const float phase = frame * 0.0011f;
+      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
+        GFXcanvas16 &cv = *hubSaverCanvas;
+        cv.fillScreen(HUB_BG);
+        for (int16_t y = 8; y < bottom - top; y += 18) cv.drawFastHLine(2, y, 124, 0x1082);
+        const int16_t scanY = (int16_t)((frame / 90U) % (bottom - top));
+        cv.drawFastHLine(2, scanY, 124, 0x2127);
+        int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
+        for (int16_t y = 5; y < (bottom - top) - 3; y += 3) {
+          const float t = (float)(y - 5) * 0.105f + phase;
+          const float wave = sinf(t);
+          const float depth = cosf(t);
+          const int16_t spread = 20 + (int16_t)(depth * 3.0f);
+          const int16_t ax = w / 2 + (int16_t)(wave * spread);
+          const int16_t bx = w / 2 - (int16_t)(wave * spread);
+          const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF;
+          const uint16_t cb = depth > 0 ? HUB_CYAN : 0xF81F;
+          if (y > 5) {
+            if (((y + top) % 10) == 0) cv.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
+            cv.drawLine(prevAx, prevAy, ax, y, ca);
+            cv.drawLine(prevBx, prevBy, bx, y, cb);
+          }
+          if (((y + top) % 10) == 0) {
+            const uint8_t r = depth > 0.55f ? 3 : 2;
+            cv.fillCircle(ax, y, r, ca);
+            cv.fillCircle(bx, y, r, cb);
+            cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
+            cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
+          }
+          prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
         }
-        // Highlight beads, with apparent size driven by depth.
-        if ((y % 10) == 0) {
-          const uint8_t r = depth > 0.55f ? 3 : 2;
-          hubTFT.fillCircle(ax, y, r, ca);
-          hubTFT.fillCircle(bx, y, r, cb);
-          hubTFT.drawPixel(ax - 1, y - 1, HUB_WHITE);
-          hubTFT.drawPixel(bx - 1, y - 1, HUB_WHITE);
+        for (uint8_t i = 0; i < 4; ++i) {
+          const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
+          const int16_t x = w / 2 + (int16_t)(sinf(p) * (31.0f + (i % 3) * 4.0f));
+          const int16_t y = 10 + (int16_t)((((frame / (22U + i * 3U)) + i * 19U) % (uint32_t)(bottom - top - 18)));
+          cv.drawPixel(x, y, (i & 1) ? HUB_CYAN : HUB_YELLOW);
+          if ((i % 3) == 0) cv.drawPixel(x + 1, y, HUB_WHITE);
         }
-        prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
-      }
-      // Floating energy motes orbit the strands; deterministic motion avoids random() cost.
-      for (uint8_t i = 0; i < 4; ++i) {
-        const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
-        const int16_t x = w / 2 + (int16_t)(sinf(p) * (31.0f + (i % 3) * 4.0f));
-        const int16_t y = top + 10 + (int16_t)((((frame / (22U + i * 3U)) + i * 19U) % (uint32_t)(bottom - top - 18)));
-        hubTFT.drawPixel(x, y, (i & 1) ? HUB_CYAN : HUB_YELLOW);
-        if ((i % 3) == 0) hubTFT.drawPixel(x + 1, y, HUB_WHITE);
+        hubTFT.pushImage(0, top, 128, bottom - top, cv.getBuffer());
+        hubTFT.waitDMA();
+      } else {
+        // Low-memory fallback: preserve animation if the optional canvas cannot be allocated.
+        hubTFT.fillRect(18, top, w - 36, bottom - top, HUB_BG);
+        for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(20, y, w - 40, 0x1082);
+        const int16_t scanY = top + (int16_t)((frame / 90U) % (bottom - top));
+        hubTFT.drawFastHLine(20, scanY, w - 40, 0x2127);
+        int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
+        for (int16_t y = top + 5; y < bottom - 3; y += 3) {
+          const float t = (float)(y - top) * 0.105f + phase;
+          const float wave = sinf(t), depth = cosf(t);
+          const int16_t spread = 20 + (int16_t)(depth * 3.0f);
+          const int16_t ax = w / 2 + (int16_t)(wave * spread), bx = w / 2 - (int16_t)(wave * spread);
+          const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF, cb = depth > 0 ? HUB_CYAN : 0xF81F;
+          if (y > top + 5) {
+            if ((y % 10) == 0) hubTFT.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
+            hubTFT.drawLine(prevAx, prevAy, ax, y, ca); hubTFT.drawLine(prevBx, prevBy, bx, y, cb);
+          }
+          if ((y % 10) == 0) {
+            const uint8_t r = depth > 0.55f ? 3 : 2;
+            hubTFT.fillCircle(ax, y, r, ca); hubTFT.fillCircle(bx, y, r, cb);
+            hubTFT.drawPixel(ax - 1, y - 1, HUB_WHITE); hubTFT.drawPixel(bx - 1, y - 1, HUB_WHITE);
+          }
+          prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
+        }
       }
       break;
     }
-    case 10: { // Aurora: animate three colored bands in a narrow horizontal area.
-      const int16_t mid = h / 2; const float phase = millis() * 0.0025f;
-      hubTFT.fillRect(0, mid - 27, w, 55, HUB_BG);
-      for (int16_t x = 0; x < w - 1; ++x) {
-        int16_t y1 = mid + (int16_t)(sinf(x * 0.055f + phase) * 19.0f);
-        int16_t y2 = mid + (int16_t)(sinf((x + 1) * 0.055f + phase) * 19.0f);
-        int16_t g1 = mid + 7 + (int16_t)(sinf(x * 0.045f - phase * 0.8f) * 13.0f);
-        int16_t g2 = mid + 7 + (int16_t)(sinf((x + 1) * 0.045f - phase * 0.8f) * 13.0f);
-        int16_t b1 = mid - 5 + (int16_t)(sinf(x * 0.07f + phase * 0.65f) * 11.0f);
-        int16_t b2 = mid - 5 + (int16_t)(sinf((x + 1) * 0.07f + phase * 0.65f) * 11.0f);
-        hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
-        hubTFT.drawLine(x, g1, x + 1, g2, HUB_GREEN);
-        hubTFT.drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+    case 10: { // Aurora: off-screen composition; old lines are never left behind.
+      const int16_t mid = h / 2;
+      const int16_t bandTop = mid - 27;
+      const float phase = millis() * 0.0025f;
+      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
+        hubSaverCanvas->fillScreen(HUB_BG);
+        for (int16_t x = 0; x < w - 1; ++x) {
+          const int16_t y1 = 27 + (int16_t)(sinf(x * 0.055f + phase) * 19.0f);
+          const int16_t y2 = 27 + (int16_t)(sinf((x + 1) * 0.055f + phase) * 19.0f);
+          const int16_t g1 = 34 + (int16_t)(sinf(x * 0.045f - phase * 0.8f) * 13.0f);
+          const int16_t g2 = 34 + (int16_t)(sinf((x + 1) * 0.045f - phase * 0.8f) * 13.0f);
+          const int16_t b1 = 22 + (int16_t)(sinf(x * 0.07f + phase * 0.65f) * 11.0f);
+          const int16_t b2 = 22 + (int16_t)(sinf((x + 1) * 0.07f + phase * 0.65f) * 11.0f);
+          hubSaverCanvas->drawLine(x, y1, x + 1, y2, HUB_CYAN);
+          hubSaverCanvas->drawLine(x, g1, x + 1, g2, HUB_GREEN);
+          hubSaverCanvas->drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+        }
+        hubTFT.pushImage(0, bandTop, 128, 55, hubSaverCanvas->getBuffer());
+        hubTFT.waitDMA();
+      } else {
+        hubTFT.fillRect(0, bandTop, w, 55, HUB_BG);
+        for (int16_t x = 0; x < w - 1; ++x) {
+          int16_t y1 = mid + (int16_t)(sinf(x * 0.055f + phase) * 19.0f);
+          int16_t y2 = mid + (int16_t)(sinf((x + 1) * 0.055f + phase) * 19.0f);
+          int16_t g1 = mid + 7 + (int16_t)(sinf(x * 0.045f - phase * 0.8f) * 13.0f);
+          int16_t g2 = mid + 7 + (int16_t)(sinf((x + 1) * 0.045f - phase * 0.8f) * 13.0f);
+          int16_t b1 = mid - 5 + (int16_t)(sinf(x * 0.07f + phase * 0.65f) * 11.0f);
+          int16_t b2 = mid - 5 + (int16_t)(sinf((x + 1) * 0.07f + phase * 0.65f) * 11.0f);
+          hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
+          hubTFT.drawLine(x, g1, x + 1, g2, HUB_GREEN);
+          hubTFT.drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+        }
       }
       break;
     }
@@ -3685,87 +3764,246 @@ static bool applyWeatherSnapshot(const WeatherSnapshot &v,const char *provider){
   return true;
 }
 
-static bool fetchOpenMeteo(WeatherSnapshot &v){
-  WiFiClientSecure client;client.setInsecure();client.setHandshakeTimeout(10);client.setTimeout(10000);
-  HTTPClient https;https.setTimeout(10000);https.setReuse(false);
-  String url="https://api.open-meteo.com/v1/forecast?latitude="+String(WEATHER_LAT,6)+
-    "&longitude="+String(WEATHER_LON,6)+
-    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,uv_index,precipitation,weather_code"+
+static bool weatherResolveHost(const char *host, IPAddress &resolved) {
+  if (WiFi.status() != WL_CONNECTED) {
+    LOG_W("Weather DNS skipped: Wi-Fi disconnected");
+    return false;
+  }
+  const uint32_t started = millis();
+  const int ok = WiFi.hostByName(host, resolved, 3500);
+  const uint32_t elapsed = millis() - started;
+  if (ok == 1) {
+    LOG_B("Weather DNS %s -> %s (%lu ms, RSSI=%d dBm)",
+          host, resolved.toString().c_str(), (unsigned long)elapsed, WiFi.RSSI());
+    return true;
+  }
+  LOG_ERR("Weather DNS failed for %s (%lu ms, RSSI=%d dBm)",
+          host, (unsigned long)elapsed, WiFi.RSSI());
+  return false;
+}
+
+static void configureWeatherHttp(WiFiClientSecure &client, HTTPClient &https, const char *agent) {
+  client.setInsecure();                 // TLS encryption remains enabled; certificate verification is intentionally disabled.
+  client.setHandshakeTimeout(6);
+  client.setTimeout(7000);
+  https.setTimeout(7000);
+  https.setReuse(false);
+  https.setUserAgent(agent);
+  https.addHeader("Accept", "application/json");
+}
+
+static bool fetchOpenMeteo(WeatherSnapshot &v) {
+  const uint32_t now = millis();
+  if (weatherOpenMeteoLastAttemptAt && (uint32_t)(now - weatherOpenMeteoLastAttemptAt) < 60000UL) {
+    LOG_W("Open-Meteo retry cooldown active");
+    return false;
+  }
+  weatherOpenMeteoLastAttemptAt = now;
+  const char *host = "api.open-meteo.com";
+  IPAddress resolved;
+  if (!weatherResolveHost(host, resolved)) return false;
+
+  WiFiClientSecure client;
+  HTTPClient https;
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (+https://github.com/Serg434/Arduino)");
+  String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(WEATHER_LAT, 6) +
+    "&longitude=" + String(WEATHER_LON, 6) +
+    "&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,uv_index,precipitation,weather_code" +
     "&hourly=precipitation_probability,precipitation&forecast_days=1&timezone=Asia%2FYekaterinburg";
-  if(!https.begin(client,url)){LOG_ERR("Open-Meteo HTTPS begin failed");return false;}
-  const int code=https.GET();
-  if(code!=HTTP_CODE_OK){LOG_ERR("Open-Meteo failed: code=%d (%s), RSSI=%d dBm",code,https.errorToString(code).c_str(),WiFi.RSSI());https.end();return false;}
-  DynamicJsonDocument doc(8192);String payload=https.getString();https.end();payload.trim();
-  if(payload.length()>=3&&(uint8_t)payload[0]==0xEF&&(uint8_t)payload[1]==0xBB&&(uint8_t)payload[2]==0xBF)payload.remove(0,3);
-  DeserializationError err=deserializeJson(doc,payload);
-  if(err){LOG_ERR("Open-Meteo JSON error: %s bytes=%u",err.c_str(),(unsigned)payload.length());return false;}
-  JsonObject cur=doc["current"];
-  v.temperature=cur["temperature_2m"]|NAN;v.humidity=cur["relative_humidity_2m"]|NAN;
-  v.feelsLike=cur["apparent_temperature"]|NAN;v.pressure=cur["surface_pressure"]|NAN;
-  v.windSpeed=cur["wind_speed_10m"]|NAN;v.windDirection=cur["wind_direction_10m"]|NAN;
-  v.cloudCover=cur["cloud_cover"]|NAN;v.uvIndex=cur["uv_index"]|NAN;
-  v.precipitation=cur["precipitation"]|0.0f;v.weatherCode=cur["weather_code"]|-1;
-  const char *currentTime=cur["time"]|"";
-  JsonArray times=doc["hourly"]["time"].as<JsonArray>();
-  JsonArray probs=doc["hourly"]["precipitation_probability"].as<JsonArray>();
-  JsonArray rain=doc["hourly"]["precipitation"].as<JsonArray>();
-  for(size_t i=0;i<times.size();++i){const char *candidate=times[i]|"";if(strlen(currentTime)>=13&&strncmp(candidate,currentTime,13)==0){if(i<probs.size())v.precipitationProbability=probs[i]|-1;if(i<rain.size())v.precipitation=rain[i]|v.precipitation;break;}}
-  return !isnan(v.temperature);
-}
+  if (!https.begin(client, url)) {
+    LOG_ERR("Open-Meteo HTTPS begin failed");
+    return false;
+  }
+  const uint32_t requestStarted = millis();
+  const int code = https.GET();
+  if (code != HTTP_CODE_OK) {
+    LOG_ERR("Open-Meteo HTTP/TLS failed: code=%d (%s), elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
+            code, https.errorToString(code).c_str(), (unsigned long)(millis() - requestStarted),
+            resolved.toString().c_str(), WiFi.RSSI());
+    https.end();
+    return false;
+  }
 
-static bool fetchWttr(WeatherSnapshot &v){
-  WiFiClientSecure client;client.setInsecure();client.setHandshakeTimeout(10);client.setTimeout(10000);
-  HTTPClient https;https.setTimeout(10000);https.setReuse(false);https.setUserAgent("GoodWinSmartHub/3.11.0 ESP32");
-  String url="https://wttr.in/"+String(WEATHER_LAT,6)+","+String(WEATHER_LON,6)+"?format=j1";
-  if(!https.begin(client,url)){LOG_ERR("wttr.in HTTPS begin failed");return false;}
-  const int code=https.GET();
-  if(code!=HTTP_CODE_OK){LOG_ERR("wttr.in fallback failed: code=%d (%s)",code,https.errorToString(code).c_str());https.end();return false;}
-  String payload=https.getString();https.end();payload.trim();
-  StaticJsonDocument<768> filter;
-  filter["current_condition"][0]["temp_C"]=true;filter["current_condition"][0]["FeelsLikeC"]=true;
-  filter["current_condition"][0]["humidity"]=true;filter["current_condition"][0]["pressure"]=true;
-  filter["current_condition"][0]["windspeedKmph"]=true;filter["current_condition"][0]["winddirDegree"]=true;
-  filter["current_condition"][0]["cloudcover"]=true;filter["current_condition"][0]["uvIndex"]=true;
-  filter["current_condition"][0]["precipMM"]=true;filter["current_condition"][0]["weatherCode"]=true;
-  DynamicJsonDocument doc(1536);
-  DeserializationError err=deserializeJson(doc,payload,DeserializationOption::Filter(filter));
-  if(err){LOG_ERR("wttr.in JSON error: %s bytes=%u",err.c_str(),(unsigned)payload.length());return false;}
-  JsonObject cur=doc["current_condition"][0];
-  v.temperature=cur["temp_C"]|NAN;v.feelsLike=cur["FeelsLikeC"]|NAN;
-  v.humidity=cur["humidity"]|NAN;v.pressure=cur["pressure"]|NAN;
-  v.windSpeed=cur["windspeedKmph"]|NAN;v.windDirection=cur["winddirDegree"]|NAN;
-  v.cloudCover=cur["cloudcover"]|NAN;v.uvIndex=cur["uvIndex"]|NAN;
-  v.precipitation=cur["precipMM"]|0.0f;v.precipitationProbability=-1;v.weatherCode=-1;
-  LOG_B("wttr.in raw weather code=%s",String((const char*)(cur["weatherCode"]|"")).c_str());
-  return !isnan(v.temperature);
-}
-
-static bool fetchMetNo(WeatherSnapshot &v){
-  WiFiClientSecure client;client.setInsecure();client.setHandshakeTimeout(10);client.setTimeout(10000);
-  HTTPClient https;https.setTimeout(10000);https.setReuse(false);
-  https.setUserAgent("GoodWinSmartHub/3.11.0 ESP32 firmware");
-  String url="https://api.met.no/weatherapi/locationforecast/2.0/compact?lat="+String(WEATHER_LAT,6)+"&lon="+String(WEATHER_LON,6);
-  if(!https.begin(client,url)){LOG_ERR("MET Norway HTTPS begin failed");return false;}
-  const int code=https.GET();
-  if(code!=HTTP_CODE_OK){LOG_ERR("MET Norway fallback failed: code=%d (%s)",code,https.errorToString(code).c_str());https.end();return false;}
-  String payload=https.getString();https.end();payload.trim();
   StaticJsonDocument<1024> filter;
-  JsonObject details=filter["properties"]["timeseries"][0]["data"]["instant"]["details"].to<JsonObject>();
-  details["air_temperature"]=true;details["relative_humidity"]=true;details["air_pressure_at_sea_level"]=true;
-  details["wind_speed"]=true;details["wind_from_direction"]=true;details["cloud_area_fraction"]=true;
-  details["ultraviolet_index_clear_sky"]=true;
-  filter["properties"]["timeseries"][0]["data"]["next_1_hours"]["details"]["precipitation_amount"]=true;
+  filter["current"]["temperature_2m"] = true;
+  filter["current"]["relative_humidity_2m"] = true;
+  filter["current"]["apparent_temperature"] = true;
+  filter["current"]["surface_pressure"] = true;
+  filter["current"]["wind_speed_10m"] = true;
+  filter["current"]["wind_direction_10m"] = true;
+  filter["current"]["cloud_cover"] = true;
+  filter["current"]["uv_index"] = true;
+  filter["current"]["precipitation"] = true;
+  filter["current"]["weather_code"] = true;
+  filter["current"]["time"] = true;
+  filter["hourly"]["time"][0] = true;
+  filter["hourly"]["precipitation_probability"][0] = true;
+  filter["hourly"]["precipitation"][0] = true;
+  DynamicJsonDocument doc(4096);
+  DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
+  https.end();
+  if (err) {
+    LOG_ERR("Open-Meteo JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
+    return false;
+  }
+  if (doc.overflowed()) {
+    LOG_ERR("Open-Meteo JSON document overflow");
+    return false;
+  }
+
+  JsonObject cur = doc["current"];
+  v.temperature = cur["temperature_2m"] | NAN;
+  v.humidity = cur["relative_humidity_2m"] | NAN;
+  v.feelsLike = cur["apparent_temperature"] | NAN;
+  v.pressure = cur["surface_pressure"] | NAN;
+  v.windSpeed = cur["wind_speed_10m"] | NAN;
+  v.windDirection = cur["wind_direction_10m"] | NAN;
+  v.cloudCover = cur["cloud_cover"] | NAN;
+  v.uvIndex = cur["uv_index"] | NAN;
+  v.precipitation = cur["precipitation"] | 0.0f;
+  v.weatherCode = cur["weather_code"] | -1;
+  const char *currentTime = cur["time"] | "";
+  JsonArray times = doc["hourly"]["time"].as<JsonArray>();
+  JsonArray probs = doc["hourly"]["precipitation_probability"].as<JsonArray>();
+  JsonArray rain = doc["hourly"]["precipitation"].as<JsonArray>();
+  for (size_t i = 0; i < times.size(); ++i) {
+    const char *candidate = times[i] | "";
+    if (strlen(currentTime) >= 13 && strncmp(candidate, currentTime, 13) == 0) {
+      if (i < probs.size()) v.precipitationProbability = probs[i] | -1;
+      if (i < rain.size()) v.precipitation = rain[i] | v.precipitation;
+      break;
+    }
+  }
+  LOG_B("Open-Meteo response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
+  return !isnan(v.temperature);
+}
+
+static bool fetchWttr(WeatherSnapshot &v) {
+  const uint32_t now = millis();
+  if (weatherWttrLastAttemptAt && (uint32_t)(now - weatherWttrLastAttemptAt) < WEATHER_WTTR_COOLDOWN_MS) {
+    LOG_W("wttr.in cooldown active; skipping repeated request");
+    return false;
+  }
+  weatherWttrLastAttemptAt = now;
+  const char *host = "wttr.in";
+  IPAddress resolved;
+  if (!weatherResolveHost(host, resolved)) return false;
+
+  WiFiClientSecure client;
+  HTTPClient https;
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (+https://github.com/Serg434/Arduino)");
+  String url = "https://wttr.in/" + String(WEATHER_LAT, 4) + "," + String(WEATHER_LON, 4) + "?format=j1";
+  if (!https.begin(client, url)) {
+    LOG_ERR("wttr.in HTTPS begin failed");
+    return false;
+  }
+  const uint32_t requestStarted = millis();
+  const int code = https.GET();
+  if (code != HTTP_CODE_OK) {
+    LOG_ERR("wttr.in HTTP/TLS failed: code=%d (%s), elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
+            code, https.errorToString(code).c_str(), (unsigned long)(millis() - requestStarted),
+            resolved.toString().c_str(), WiFi.RSSI());
+    https.end();
+    return false;
+  }
+
+  StaticJsonDocument<768> filter;
+  filter["current_condition"][0]["temp_C"] = true;
+  filter["current_condition"][0]["FeelsLikeC"] = true;
+  filter["current_condition"][0]["humidity"] = true;
+  filter["current_condition"][0]["pressure"] = true;
+  filter["current_condition"][0]["windspeedKmph"] = true;
+  filter["current_condition"][0]["winddirDegree"] = true;
+  filter["current_condition"][0]["cloudcover"] = true;
+  filter["current_condition"][0]["uvIndex"] = true;
+  filter["current_condition"][0]["precipMM"] = true;
+  filter["current_condition"][0]["weatherCode"] = true;
+  DynamicJsonDocument doc(1536);
+  DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
+  https.end();
+  if (err) {
+    LOG_ERR("wttr.in JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
+    return false;
+  }
+  JsonObject cur = doc["current_condition"][0];
+  v.temperature = cur["temp_C"] | NAN;
+  v.feelsLike = cur["FeelsLikeC"] | NAN;
+  v.humidity = cur["humidity"] | NAN;
+  v.pressure = cur["pressure"] | NAN;
+  v.windSpeed = cur["windspeedKmph"] | NAN;
+  v.windDirection = cur["winddirDegree"] | NAN;
+  v.cloudCover = cur["cloudcover"] | NAN;
+  v.uvIndex = cur["uvIndex"] | NAN;
+  v.precipitation = cur["precipMM"] | 0.0f;
+  v.precipitationProbability = -1;
+  v.weatherCode = -1;
+  LOG_B("wttr.in response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
+  return !isnan(v.temperature);
+}
+
+static bool fetchMetNo(WeatherSnapshot &v) {
+  const uint32_t now = millis();
+  if (weatherMetNoLastAttemptAt && (uint32_t)(now - weatherMetNoLastAttemptAt) < WEATHER_METNO_COOLDOWN_MS) {
+    LOG_W("MET Norway cooldown active (30 min policy/cache interval); skipping request");
+    return false;
+  }
+  weatherMetNoLastAttemptAt = now;
+  const char *host = "api.met.no";
+  IPAddress resolved;
+  if (!weatherResolveHost(host, resolved)) return false;
+
+  WiFiClientSecure client;
+  HTTPClient https;
+  // MET Norway requires a unique identifying User-Agent. The project URL is the identifier.
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (https://github.com/Serg434/Arduino)");
+  String url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
+    String(WEATHER_LAT, 4) + "&lon=" + String(WEATHER_LON, 4);
+  if (!https.begin(client, url)) {
+    LOG_ERR("MET Norway HTTPS begin failed");
+    return false;
+  }
+  const uint32_t requestStarted = millis();
+  const int code = https.GET();
+  if (code != HTTP_CODE_OK) {
+    const String errorClass = https.header("X-ErrorClass");
+    LOG_ERR("MET Norway HTTP/TLS failed: code=%d (%s), class=%s, elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
+            code, https.errorToString(code).c_str(), errorClass.c_str(),
+            (unsigned long)(millis() - requestStarted), resolved.toString().c_str(), WiFi.RSSI());
+    https.end();
+    return false;
+  }
+
+  StaticJsonDocument<1024> filter;
+  JsonObject details = filter["properties"]["timeseries"][0]["data"]["instant"]["details"].to<JsonObject>();
+  details["air_temperature"] = true;
+  details["relative_humidity"] = true;
+  details["air_pressure_at_sea_level"] = true;
+  details["wind_speed"] = true;
+  details["wind_from_direction"] = true;
+  details["cloud_area_fraction"] = true;
+  details["ultraviolet_index_clear_sky"] = true;
+  filter["properties"]["timeseries"][0]["data"]["next_1_hours"]["details"]["precipitation_amount"] = true;
   DynamicJsonDocument doc(2048);
-  DeserializationError err=deserializeJson(doc,payload,DeserializationOption::Filter(filter));
-  if(err){LOG_ERR("MET Norway JSON error: %s bytes=%u",err.c_str(),(unsigned)payload.length());return false;}
-  JsonObject point=doc["properties"]["timeseries"][0]["data"];
-  JsonObject d=point["instant"]["details"];
-  v.temperature=d["air_temperature"]|NAN;v.humidity=d["relative_humidity"]|NAN;
-  v.pressure=d["air_pressure_at_sea_level"]|NAN;v.windSpeed=d["wind_speed"]|NAN;
-  v.windDirection=d["wind_from_direction"]|NAN;v.cloudCover=d["cloud_area_fraction"]|NAN;
-  v.uvIndex=d["ultraviolet_index_clear_sky"]|NAN;
-  v.precipitation=point["next_1_hours"]["details"]["precipitation_amount"]|0.0f;
-  v.feelsLike=NAN;v.precipitationProbability=-1;v.weatherCode=-1;
+  DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
+  https.end();
+  if (err) {
+    LOG_ERR("MET Norway JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
+    return false;
+  }
+  JsonObject point = doc["properties"]["timeseries"][0]["data"];
+  JsonObject d = point["instant"]["details"];
+  v.temperature = d["air_temperature"] | NAN;
+  v.humidity = d["relative_humidity"] | NAN;
+  v.pressure = d["air_pressure_at_sea_level"] | NAN;
+  v.windSpeed = d["wind_speed"] | NAN;
+  v.windDirection = d["wind_from_direction"] | NAN;
+  v.cloudCover = d["cloud_area_fraction"] | NAN;
+  v.uvIndex = d["ultraviolet_index_clear_sky"] | NAN;
+  v.precipitation = point["next_1_hours"]["details"]["precipitation_amount"] | 0.0f;
+  v.feelsLike = NAN;
+  v.precipitationProbability = -1;
+  v.weatherCode = -1;
+  LOG_B("MET Norway response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
   return !isnan(v.temperature);
 }
 
