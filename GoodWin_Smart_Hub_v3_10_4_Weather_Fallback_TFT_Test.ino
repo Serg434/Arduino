@@ -1447,6 +1447,7 @@ void persistHubConfigFromMqtt() {
     statePrefs.putBool("display", hubDisplayEnabled);
     statePrefs.putBool("dispOn", displayMatterOn);
     statePrefs.putUChar("dispBri", displayBrightnessPercent);
+    statePrefs.putUChar("testFps", hubTestFpsTarget);
     statePrefs.end();
   }
 }
@@ -3408,6 +3409,7 @@ void setup() {
   hubLayoutId = statePrefs.getUChar("layout", 0); if (hubLayoutId >= HUB_LAYOUT_COUNT) hubLayoutId = 0;
   hubSaverId = statePrefs.getUChar("saver", 0); if (hubSaverId >= HUB_SAVER_COUNT) hubSaverId = 0;
   hubOrientation = statePrefs.getUChar("orient", 0); if (hubOrientation > 3) hubOrientation = 0;
+  hubTestFpsTarget = statePrefs.getUChar("testFps", 20); if (hubTestFpsTarget < 1 || hubTestFpsTarget > 60) hubTestFpsTarget = 20;
   hubDisplayEnabled = statePrefs.getBool("display", true);
   hubTFT.setRotation(hubOrientation);
   displayMatterOn = hubDisplayEnabled;
@@ -3482,6 +3484,7 @@ void loop() {
       statePrefs.putBool("display", hubDisplayEnabled);
       statePrefs.putBool("dispOn", displayMatterOn);
       statePrefs.putUChar("dispBri", displayBrightnessPercent);
+    statePrefs.putUChar("testFps", hubTestFpsTarget);
       statePrefs.end();
     }
     displayPrefsPending = false;
