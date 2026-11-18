@@ -494,6 +494,7 @@ void handleSpeed();
 void setupSmartHubDisplay();
 void updateSmartHub();
 void drawSmartHub();
+static void hubInvalidateValueCache();
 void pushChangedTftFrame();
 void updateHubClock();
 void startWeatherTask();
