@@ -206,7 +206,7 @@ String timeText = "--:--";
 String dateText = "--.--.----";
 portMUX_TYPE hubDataMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t weatherTaskHandle = nullptr;
-static const char *HUB_LAYOUT_NAMES[40] = {
+static const char *HUB_LAYOUT_NAMES[] = {
   "Dashboard", "Часы крупно", "Погода крупно", "Домашний климат", "Дом + улица", "Состояние света",
   "Aurora — погода PRO", "Тест TFT · FPS", "Погода + часы", "Домашний климат", "Улица + дом", "Минимализм 1", "Минимализм 2",
   "Компактный 1", "Компактный 2", "Крупные цифры 1", "Крупные цифры 2", "Погода карточками", "Климат карточками",
