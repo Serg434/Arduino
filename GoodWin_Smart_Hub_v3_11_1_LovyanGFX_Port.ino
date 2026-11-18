@@ -3381,6 +3381,11 @@ static void initHubScreenSaver() {
 }
 
 static void drawHubScreenSaverFrame() {
+  static uint32_t diagWindowAt = 0;
+  static uint32_t diagFrames = 0;
+  static uint32_t diagTotalUs = 0;
+  static uint32_t diagMaxUs = 0;
+  const uint32_t frameStartedUs = micros();
   const int16_t w = hubTFT.width(), h = hubTFT.height();
   switch (hubSaverId) {
     case 1: // Clock: only the changing text region is touched.
@@ -3589,6 +3594,24 @@ static void drawHubScreenSaverFrame() {
       break;
     }
     default: break;
+  }
+  const uint32_t drawUs = micros() - frameStartedUs;
+  ++diagFrames;
+  diagTotalUs += drawUs;
+  if (drawUs > diagMaxUs) diagMaxUs = drawUs;
+  const uint32_t diagNow = millis();
+  if (diagWindowAt == 0) diagWindowAt = diagNow;
+  if ((uint32_t)(diagNow - diagWindowAt) >= 5000UL) {
+    const uint32_t elapsedMs = diagNow - diagWindowAt;
+    const uint32_t fps = elapsedMs ? (diagFrames * 1000UL) / elapsedMs : 0;
+    LOG_S("SAVER id=%u fps=%lu draw_avg=%lu us draw_max=%lu us heap=%u",
+          hubSaverId, (unsigned long)fps,
+          (unsigned long)(diagFrames ? diagTotalUs / diagFrames : 0),
+          (unsigned long)diagMaxUs, ESP.getFreeHeap());
+    diagWindowAt = diagNow;
+    diagFrames = 0;
+    diagTotalUs = 0;
+    diagMaxUs = 0;
   }
 }
 
