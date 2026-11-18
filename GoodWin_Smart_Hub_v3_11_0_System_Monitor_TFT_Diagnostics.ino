@@ -48,6 +48,18 @@ static float goodwinReadChipTemperatureC() {
 #endif
 }
 
+static const char *goodwinFlashModeName(FlashMode_t mode) {
+  switch (mode) {
+    case FM_QIO: return "QIO";
+    case FM_QOUT: return "QOUT";
+    case FM_DIO: return "DIO";
+    case FM_DOUT: return "DOUT";
+    case FM_FAST_READ: return "FAST";
+    case FM_SLOW_READ: return "SLOW";
+    default: return "UNKNOWN";
+  }
+}
+
 // ============================================================
 // GoodWin Smart Hub v3.11.1-dev | buffered TFT value patches + hardware auto-detection
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
@@ -1030,7 +1042,8 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 <div class="status-item"><div class="status-label">Профиль платы</div><div class="status-value" id="sysBoard">—</div></div>
 <div class="status-item"><div class="status-label">Модель чипа</div><div class="status-value" id="sysChip">—</div></div>
 <div class="status-item"><div class="status-label">Ревизия / ядра</div><div class="status-value" id="sysChipInfo">—</div></div>
-<div class="status-item"><div class="status-label">Частота Flash</div><div class="status-value" id="sysFlashSpeed">—</div></div>
+<div class="status-item"><div class="status-label">Flash · частота / режим</div><div class="status-value" id="sysFlashSpeed">—</div></div>
+<div class="status-item"><div class="status-label">Arduino-ESP32</div><div class="status-value" id="sysCore">—</div></div>
 <div class="status-item"><div class="status-label">ESP-IDF</div><div class="status-value" id="sysSdk">—</div></div>
 <div class="status-item"><div class="status-label">Размер прошивки</div><div class="status-value" id="sysSketch">—</div></div>
 </div><div class="log-hint">Модель и ревизия определяются по ESP-чипу. Профиль платы берётся из конфигурации Arduino: точную маркировку PCB программно определить нельзя. Температура — внутренний датчик ESP32, если он поддерживается ядром.</div></section>
@@ -1293,7 +1306,7 @@ async function updateHubTelemetry(){
   document.getElementById('hubWeatherState').textContent=(d.weatherStatus||'Нет статуса')+' · '+(d.weatherSource||'—');const ws=document.getElementById('hubWeatherSource');if(ws&&ws.value!==String(d.weatherMode??0))ws.value=String(d.weatherMode??0);
  }catch(e){document.getElementById('hubWeatherState').textContent='Нет связи с ESP32';}
 }
-async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=(d.chipTempC===null||d.chipTempC===undefined||!Number.isFinite(Number(d.chipTempC)))?"недоступно":Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysBoard").textContent=d.boardProfile||"—";document.getElementById("sysChip").textContent=d.chipModel||"—";document.getElementById("sysChipInfo").textContent=(d.chipRevision??"—")+" · "+(d.chipCores??"—")+" ядра";document.getElementById("sysFlashSpeed").textContent=d.flashSpeedMHz?d.flashSpeedMHz+" MHz":"—";document.getElementById("sysSdk").textContent=d.sdkVersion||"—";document.getElementById("sysSketch").textContent=mb(d.sketchSize)+" / свободно "+mb(d.freeSketchSpace);document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ · "+(e&&e.message?e.message:"ошибка запроса");}}
+async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=(d.chipTempC===null||d.chipTempC===undefined||!Number.isFinite(Number(d.chipTempC)))?"недоступно":Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysBoard").textContent=d.boardProfile||"—";document.getElementById("sysChip").textContent=d.chipModel||"—";document.getElementById("sysChipInfo").textContent=(d.chipRevision??"—")+" · "+(d.chipCores??"—")+" ядра";document.getElementById("sysFlashSpeed").textContent=(d.flashSpeedMHz?d.flashSpeedMHz+" MHz":"—")+" · "+(d.flashMode||"—");document.getElementById("sysCore").textContent=d.coreVersion||"—";document.getElementById("sysSdk").textContent=d.sdkVersion||"—";document.getElementById("sysSketch").textContent=mb(d.sketchSize)+" / свободно "+mb(d.freeSketchSpace);document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ · "+(e&&e.message?e.message:"ошибка запроса");}}
 loadHubConfig();updateHubTelemetry();updateSystemMonitor();setInterval(updateSystemMonitor,2000);setInterval(updateHubTelemetry,5000);setInterval(()=>{if(document.querySelector('[data-panel=\"screen\"].active'))loadHubConfig(true);},2000);
 
 </script>
@@ -1849,6 +1862,8 @@ void handleSystemMetrics() {
   json += "\"chipRevision\":" + String(ESP.getChipRevision()) + ",";
   json += "\"chipCores\":" + String(ESP.getChipCores()) + ",";
   json += "\"flashSpeedMHz\":" + String(ESP.getFlashChipSpeed() / 1000000UL) + ",";
+  json += "\"flashMode\":\"" + String(goodwinFlashModeName(ESP.getFlashChipMode())) + "\",";
+  json += "\"coreVersion\":\"" + jsonEscape(String(ESP.getCoreVersion())) + "\",";
   json += "\"sdkVersion\":\"" + jsonEscape(String(ESP.getSdkVersion())) + "\",";
   json += "\"sketchSize\":" + String(ESP.getSketchSize()) + ",";
   json += "\"freeSketchSpace\":" + String(ESP.getFreeSketchSpace()) + ",";
