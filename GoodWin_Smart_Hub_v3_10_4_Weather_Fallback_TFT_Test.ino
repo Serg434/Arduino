@@ -3289,6 +3289,35 @@ static bool fetchWttr(WeatherSnapshot &v){
   return !isnan(v.temperature);
 }
 
+static bool fetchMetNo(WeatherSnapshot &v){
+  WiFiClientSecure client;client.setInsecure();client.setHandshakeTimeout(10);client.setTimeout(10000);
+  HTTPClient https;https.setTimeout(10000);https.setReuse(false);
+  https.setUserAgent("GoodWinSmartHub/3.10.4 ESP32 firmware");
+  String url="https://api.met.no/weatherapi/locationforecast/2.0/compact?lat="+String(WEATHER_LAT,6)+"&lon="+String(WEATHER_LON,6);
+  if(!https.begin(client,url)){LOG_ERR("MET Norway HTTPS begin failed");return false;}
+  const int code=https.GET();
+  if(code!=HTTP_CODE_OK){LOG_ERR("MET Norway fallback failed: code=%d (%s)",code,https.errorToString(code).c_str());https.end();return false;}
+  String payload=https.getString();https.end();payload.trim();
+  StaticJsonDocument<1024> filter;
+  JsonObject details=filter["properties"]["timeseries"][0]["data"]["instant"]["details"].to<JsonObject>();
+  details["air_temperature"]=true;details["relative_humidity"]=true;details["air_pressure_at_sea_level"]=true;
+  details["wind_speed"]=true;details["wind_from_direction"]=true;details["cloud_area_fraction"]=true;
+  details["ultraviolet_index_clear_sky"]=true;
+  filter["properties"]["timeseries"][0]["data"]["next_1_hours"]["details"]["precipitation_amount"]=true;
+  DynamicJsonDocument doc(2048);
+  DeserializationError err=deserializeJson(doc,payload,DeserializationOption::Filter(filter));
+  if(err){LOG_ERR("MET Norway JSON error: %s bytes=%u",err.c_str(),(unsigned)payload.length());return false;}
+  JsonObject point=doc["properties"]["timeseries"][0]["data"];
+  JsonObject d=point["instant"]["details"];
+  v.temperature=d["air_temperature"]|NAN;v.humidity=d["relative_humidity"]|NAN;
+  v.pressure=d["air_pressure_at_sea_level"]|NAN;v.windSpeed=d["wind_speed"]|NAN;
+  v.windDirection=d["wind_from_direction"]|NAN;v.cloudCover=d["cloud_area_fraction"]|NAN;
+  v.uvIndex=d["ultraviolet_index_clear_sky"]|NAN;
+  v.precipitation=point["next_1_hours"]["details"]["precipitation_amount"]|0.0f;
+  v.feelsLike=NAN;v.precipitationProbability=-1;v.weatherCode=-1;
+  return !isnan(v.temperature);
+}
+
 void weatherTask(void *parameter){
   (void)parameter;
   for(;;){
@@ -3304,6 +3333,11 @@ void weatherTask(void *parameter){
         LOG_W("Primary weather provider unavailable; trying wttr.in fallback");
         WeatherSnapshot backup;
         if(fetchWttr(backup))ok=applyWeatherSnapshot(backup,"wttr.in");
+        else {
+          LOG_W("wttr.in unavailable; trying MET Norway fallback");
+          WeatherSnapshot tertiary;
+          if(fetchMetNo(tertiary))ok=applyWeatherSnapshot(tertiary,"MET Norway");
+        }
       }
       if(ok)nextDelay=WEATHER_INTERVAL_MS;
       else{weatherStatus="Нет данных (оба источника)";LOG_ERR("All weather providers failed; keeping last valid readings");}
