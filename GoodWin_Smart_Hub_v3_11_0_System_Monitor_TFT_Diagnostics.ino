@@ -2915,9 +2915,10 @@ static void recordTftFrame() {}
 // the ST7735 never receives a full-screen clear for ordinary telemetry changes.
 static void drawDashboardClockPartial() {
   const bool landscape = hubTFT.width() > hubTFT.height();
-  hubTFT.fillRect(4, 20, hubTFT.width() - 8, 19, HUB_BG);
-  hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG); hubTFT.setCursor(7, 23); hubTFT.print(timeText);
-  hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(landscape ? 91 : 82, landscape ? 29 : 30); hubTFT.print(dateText.substring(0, 5));
+  drawValueBox(5, 21, 72, 19, HUB_BG, HUB_WHITE, 2, timeText.c_str());
+  const String shortDate = dateText.substring(0, 5);
+  drawValueBox(landscape ? 91 : 82, landscape ? 27 : 28,
+               landscape ? 61 : 40, 12, HUB_BG, HUB_MUTED, 1, shortDate.c_str());
 }
 
 static void drawAnalogClockPartial() {
@@ -2926,9 +2927,10 @@ static void drawAnalogClockPartial() {
   hubTFT.fillRect(cx - r - 3, cy - r - 3, 2 * r + 6, 2 * r + 6, HUB_BG);
   hubClockFace(cx, cy, r);
   const int16_t ty = landscape ? 98 : 130;
-  hubTFT.fillRect(0, ty - 2, hubTFT.width(), 28, HUB_BG);
-  hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG); hubTFT.setCursor((hubTFT.width() - (int16_t)timeText.length() * 12) / 2, ty); hubTFT.print(timeText);
-  hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor((hubTFT.width() - 48) / 2, landscape ? 117 : 148); hubTFT.print(dateText.substring(0, 5));
+  drawValueBox((hubTFT.width() - 64) / 2, ty - 2, 64, 19, HUB_BG, HUB_WHITE, 2, timeText.c_str());
+  const String shortDate = dateText.substring(0, 5);
+  drawValueBox((hubTFT.width() - 48) / 2, (landscape ? 117 : 148) - 2,
+               48, 12, HUB_BG, HUB_MUTED, 1, shortDate.c_str());
 }
 
 // Render each changing value completely in RAM, then transfer the finished patch.
