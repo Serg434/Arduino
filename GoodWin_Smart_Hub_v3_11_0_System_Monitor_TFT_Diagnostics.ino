@@ -210,7 +210,6 @@ uint8_t hubOrientation = 0; // ST7735 rotation: 0..3 (portrait, landscape, inver
 static constexpr uint8_t HUB_SAVER_COUNT = 12;
 static uint16_t hubSaverIdleSeconds = 60;
 static constexpr uint32_t HUB_SAVER_FRAME_MS = 33;
-static constexpr uint32_t HUB_SAVER_FRAME_MS = 33;
 static uint32_t hubLastActivityAt = 0;
 static uint32_t hubSaverLastFrameAt = 0;
 static bool hubSaverActive = false;
