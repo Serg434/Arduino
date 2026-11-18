@@ -2653,11 +2653,13 @@ void setupSmartHubDisplay() {
   pinMode(TFT1_BL, OUTPUT);
   displayPwmReady = ledcAttach(TFT1_BL, PWM_FREQUENCY, 8);
   if (!displayPwmReady) LOG_ERR("TFT backlight PWM attach failed; using digital fallback");
-  // Backlight must be active before panel initialization on this module.\n  writeDisplayBacklight();\n  hubTFT.init();
+  // Backlight must be active before panel initialization on this module.
+  writeDisplayBacklight();
+  hubTFT.init();
   LOG_B("TFT value patch canvas: %s (%u bytes)", hubValueCanvas.getBuffer() ? "READY" : "UNAVAILABLE",
         (unsigned)(HUB_VALUE_CANVAS_W * HUB_VALUE_CANVAS_H * sizeof(uint16_t)));
   hubTFT.setRotation(0);
-  hubTFT.fillScreen(ST77XX_BLACK);
+  hubTFT.fillScreen(0x0000);
   LOG_B("TFT direct renderer ready; free heap=%u", ESP.getFreeHeap());
   hubTFT.setTextWrap(false);
   hubDHT.begin();
@@ -2796,7 +2798,7 @@ void drawSmartHub() {
     static bool disabledLogged = false;
     if (!disabledLogged) { LOG_W("TFT rendering skipped: display is disabled in saved state"); disabledLogged = true; }
     // Clear the panel even when its backlight is hard-wired to 3.3 V.
-    hubTFT.fillScreen(ST77XX_BLACK);
+    hubTFT.fillScreen(0x0000);
     return;
   }
   static bool firstFrameLogged = false;
@@ -3839,7 +3841,7 @@ void handleHubConfig() {
       if (v >= 0 && v <= 3 && hubOrientation != (uint8_t)v) {
         hubOrientation = (uint8_t)v;
         hubTFT.setRotation(hubOrientation);
-        hubTFT.fillScreen(ST77XX_BLACK);
+        hubTFT.fillScreen(0x0000);
         hubDisplayDirty = true;
         LOG_B("TFT rotation changed: %u, dimensions=%dx%d", hubOrientation, hubTFT.width(), hubTFT.height());
       }
