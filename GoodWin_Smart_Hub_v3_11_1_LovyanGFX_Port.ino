@@ -281,8 +281,23 @@ static bool displayPrefsPending = false;
 static uint32_t displayPrefsChangedAt = 0;
 static float lastMatterTemperature = NAN;
 static float lastMatterHumidity = NAN;
-String weatherStatus = "Ожидание";
-String weatherProvider = "—";
+static char weatherStatus[64] = "Ожидание";
+static char weatherProvider[24] = "—";
+static portMUX_TYPE weatherTextMux = portMUX_INITIALIZER_UNLOCKED;
+
+static void setWeatherText(const char *status, const char *provider = nullptr) {
+  portENTER_CRITICAL(&weatherTextMux);
+  if (status) strlcpy(weatherStatus, status, sizeof(weatherStatus));
+  if (provider) strlcpy(weatherProvider, provider, sizeof(weatherProvider));
+  portEXIT_CRITICAL(&weatherTextMux);
+}
+
+static void copyWeatherText(char *statusOut, size_t statusSize, char *providerOut, size_t providerSize) {
+  portENTER_CRITICAL(&weatherTextMux);
+  if (statusOut && statusSize) strlcpy(statusOut, weatherStatus, statusSize);
+  if (providerOut && providerSize) strlcpy(providerOut, weatherProvider, providerSize);
+  portEXIT_CRITICAL(&weatherTextMux);
+}
 static volatile uint8_t weatherSourceMode = 0; // 0=Auto, 1=Open-Meteo, 2=wttr.in, 3=MET Norway
 static uint32_t weatherOpenMeteoLastAttemptAt = 0;
 static uint32_t weatherWttrLastAttemptAt = 0;
@@ -1781,6 +1796,8 @@ void mqttLoop() {
   if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) return;
   static uint32_t lastAttempt = 0;
   if (!mqttClient.connected()) {
+    // TCP connect is synchronous on this core. Defer retries during animations.
+    if (hubSaverActive) return;
     if (millis() - lastAttempt < 30000) return;
     lastAttempt = millis();
     mqttConnectNow();
@@ -3757,7 +3774,7 @@ static bool applyWeatherSnapshot(const WeatherSnapshot &v,const char *provider){
   outdoorWindDirection=v.windDirection;outdoorCloudCover=v.cloudCover;outdoorUvIndex=v.uvIndex;
   outdoorPrecipProbability=v.precipitationProbability;outdoorWeatherCode=v.weatherCode;weatherValid=true;
   portEXIT_CRITICAL(&hubDataMux);
-  weatherProvider=provider;weatherStatus="OK";
+  setWeatherText("OK", provider);
   if(visibleChange){hubWeatherDirty=true;publishMqttState();}
   LOG_B("Weather OK via %s: %.1f C feels %.1f C, %.0f hPa, wind %.1f km/h, rain %.1f mm",
     provider,v.temperature,v.feelsLike,v.pressure,v.windSpeed,v.precipitation);
@@ -4012,28 +4029,28 @@ void weatherTask(void *parameter){
   (void)parameter;
   for(;;){
     uint32_t nextDelay=WEATHER_INTERVAL_MS;
-    if(WiFi.status()!=WL_CONNECTED){weatherStatus="Нет Wi-Fi";weatherProvider="—";nextDelay=60000UL;}
+    if(WiFi.status()!=WL_CONNECTED){setWeatherText("Нет Wi-Fi", "—");nextDelay=60000UL;}
     else{
       const uint8_t mode=weatherSourceMode;
       bool ok=false;
       WeatherSnapshot snapshot;
       if(mode==0){
-        weatherStatus="Запрос Open-Meteo";
+        setWeatherText("Запрос Open-Meteo");
         if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
-        if(!ok){weatherStatus="Резерв: wttr.in";LOG_W("Open-Meteo unavailable; trying wttr.in");if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");}
-        if(!ok){weatherStatus="Резерв: MET Norway";LOG_W("wttr.in unavailable; trying MET Norway");if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");}
+        if(!ok){setWeatherText("Резерв: wttr.in");LOG_W("Open-Meteo unavailable; trying wttr.in");if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");}
+        if(!ok){setWeatherText("Резерв: MET Norway");LOG_W("wttr.in unavailable; trying MET Norway");if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");}
       }else if(mode==1){
         weatherStatus="Запрос Open-Meteo";
         if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
       }else if(mode==2){
-        weatherStatus="Запрос wttr.in";
+        setWeatherText("Запрос wttr.in");
         if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");
       }else if(mode==3){
-        weatherStatus="Запрос MET Norway";
+        setWeatherText("Запрос MET Norway");
         if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");
       }
       if(ok)nextDelay=WEATHER_INTERVAL_MS;
-      else{weatherStatus="Нет данных · источник недоступен";nextDelay=60000UL;LOG_ERR("Weather request failed; mode=%u",mode);}
+      else{setWeatherText("Нет данных · источник недоступен");nextDelay=60000UL;LOG_ERR("Weather request failed; mode=%u",mode);}
     }
     // Web request interrupts the wait and starts the next refresh immediately.
     ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(nextDelay));
@@ -4043,7 +4060,7 @@ void weatherTask(void *parameter){
 void startWeatherTask() {
   if (weatherTaskHandle) return;
   BaseType_t created = xTaskCreatePinnedToCore(weatherTask, "hubWeather", 8192, nullptr, 1, &weatherTaskHandle, 0);
-  if (created != pdPASS) { weatherTaskHandle = nullptr; weatherStatus = "Ошибка задачи погоды"; LOG_ERR("Cannot create weather task"); }
+  if (created != pdPASS) { weatherTaskHandle = nullptr; setWeatherText("Ошибка задачи погоды"); LOG_ERR("Cannot create weather task"); }
 }
 
 void handleHubSaverStart() {
@@ -4148,11 +4165,13 @@ void handleHubData() {
   json += "\"windDirection\":"; if (weatherValid && !isnan(outdoorWindDirection)) json += String(outdoorWindDirection, 0); else json += "null"; json += ",";
   json += "\"cloudCover\":"; if (weatherValid && !isnan(outdoorCloudCover)) json += String(outdoorCloudCover, 0); else json += "null"; json += ",";
   json += "\"uvIndex\":"; if (weatherValid && !isnan(outdoorUvIndex)) json += String(outdoorUvIndex, 1); else json += "null"; json += ",";
-  json += "\"weatherSource\":\"" + jsonEscape(weatherProvider) + "\",";
+  char weatherSourceCopy[24], weatherStatusCopy[64];
+  copyWeatherText(weatherStatusCopy, sizeof(weatherStatusCopy), weatherSourceCopy, sizeof(weatherSourceCopy));
+  json += "\"weatherSource\":\"" + jsonEscape(String(weatherSourceCopy)) + "\",";
   json += "\"precipProbability\":"; if (weatherValid && outdoorPrecipProbability >= 0) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
   json += "\"precipitationMm\":"; if (weatherValid) json += String(outdoorPrecipMm, 1); else json += "null"; json += ",";
   json += "\"weatherMode\":" + String((uint8_t)weatherSourceMode) + ",";
-  json += "\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + weatherStatus + "\"}";
+  json += "\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + jsonEscape(String(weatherStatusCopy)) + "\"}";
   server.send(200, "application/json; charset=utf-8", json);
 }
 
@@ -4241,10 +4260,12 @@ void loop() {
   static uint32_t lastSerialHeartbeatAt=0;
   if((uint32_t)(millis()-lastSerialHeartbeatAt)>=30000UL){
     lastSerialHeartbeatAt=millis();
+    char weatherStatusCopy[64], weatherProviderCopy[24];
+    copyWeatherText(weatherStatusCopy, sizeof(weatherStatusCopy), weatherProviderCopy, sizeof(weatherProviderCopy));
     LOG_S("Heartbeat WiFi=%s RSSI=%d Matter=%s Fabric=%s heap=%u weather=%s/%s testFPS=%u",
       WiFi.status()==WL_CONNECTED?"Y":"N",WiFi.status()==WL_CONNECTED?WiFi.RSSI():0,
       Matter.isDeviceConnected()?"Y":"N",Matter.isDeviceCommissioned()?"Y":"N",ESP.getFreeHeap(),
-      weatherStatus.c_str(),weatherProvider.c_str(),hubTestMeasuredFps);
+      weatherStatusCopy,weatherProviderCopy,hubTestMeasuredFps);
   }
 
   // Persist the final display setting once the Matter slider settles.
