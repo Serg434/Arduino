@@ -256,7 +256,7 @@ portMUX_TYPE hubDataMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t weatherTaskHandle = nullptr;
 static const char *HUB_LAYOUT_NAMES[] = {
   "Dashboard", "Часы крупно", "Погода крупно", "Домашний климат", "Дом + улица", "Состояние света",
-  "Aurora — погода PRO", "Тест TFT · FPS", "Orbit — neon telemetry", "Terminal — monochrome", "Погода + часы", "Домашний климат", "Улица + дом", "Минимализм 1", "Минимализм 2",
+  "Aurora — погода PRO", "Тест TFT · FPS", "Orbit — neon telemetry", "Terminal — monochrome", "Dark Tech", "Amber", "Glass UI", "Cyber",
   "Компактный 1", "Компактный 2", "Крупные цифры 1", "Крупные цифры 2", "Погода карточками", "Климат карточками",
   "Свет + климат", "Свет + погода", "Системный статус", "Wi-Fi статус", "Matter статус", "MQTT статус",
   "Вертикальный 1", "Вертикальный 2", "Вертикальный 3", "Ночной", "Контрастный", "Монохром",
@@ -2762,6 +2762,37 @@ void drawSmartHub() {
   if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubTFT.fillScreen(HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
   const uint16_t tempColor=(sensorValid&&indoorTempC>=27.0f)?HUB_ORANGE:HUB_GREEN;
 
+  if (hubLayoutId >= 10 && hubLayoutId <= 13) {
+    // Four compact visual prototypes, rendered directly to the ST7735.
+    const bool amber = hubLayoutId == 11;
+    const uint16_t accent = amber ? HUB_YELLOW : (hubLayoutId == 13 ? 0xF81F : HUB_CYAN);
+    const char *heading = hubLayoutId == 10 ? "DARK TECH" : amber ? "AMBER" : hubLayoutId == 12 ? "GLASS UI" : "CYBER";
+    hubTFT.drawRoundRect(4, 4, w - 8, h - 8, 8, accent);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(accent, HUB_BG); hubTFT.setCursor(10, 10); hubTFT.print(heading);
+    hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(w - 44, 10); hubTFT.print("GW / 01");
+    hubTFT.drawFastHLine(9, 23, w - 18, HUB_LINE);
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG); hubTFT.setCursor(10, 31); hubTFT.print(timeText);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(10, 53); hubTFT.print(dateText);
+    const uint16_t panel = hubLayoutId == 12 ? 0x10A4 : HUB_PANEL;
+    hubCard(8, 68, w - 16, 34, panel);
+    hubTFT.setTextColor(HUB_MUTED, panel); hubTFT.setCursor(14, 73); hubTFT.print("INDOOR");
+    char v[18]; snprintf(v, sizeof(v), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
+    drawValueBox(14, 84, 55, 15, panel, HUB_WHITE, 1, v);
+    snprintf(v, sizeof(v), sensorValid ? "%.0f%% RH" : "--% RH", sensorValid ? indoorHumidity : 0.0f);
+    drawValueBox(w - 66, 84, 52, 15, panel, accent, 1, v);
+    hubCard(8, 108, (w - 22) / 2, 36, HUB_PANEL);
+    hubCard(14 + (w - 22) / 2, 108, (w - 22) / 2, 36, HUB_PANEL2);
+    hubTFT.setTextColor(HUB_MUTED, HUB_PANEL); hubTFT.setCursor(13, 113); hubTFT.print("OUTSIDE");
+    hubTFT.setTextColor(HUB_MUTED, HUB_PANEL2); hubTFT.setCursor(19 + (w - 22) / 2, 113); hubTFT.print("WIND");
+    snprintf(v, sizeof(v), weatherValid ? "%.1fC" : "--.-C", weatherValid ? outdoorTempC : 0.0f);
+    drawValueBox(12, 126, (w - 30) / 2, 13, HUB_PANEL, HUB_WHITE, 1, v);
+    snprintf(v, sizeof(v), weatherValid ? "%.0fkm/h" : "--km/h", weatherValid ? outdoorWindSpeedKmh : 0.0f);
+    drawValueBox(18 + (w - 22) / 2, 126, (w - 30) / 2, 13, HUB_PANEL2, accent, 1, v);
+    hubTFT.drawFastHLine(10, h - 18, w - 20, accent);
+    hubTFT.setTextColor(accent, HUB_BG); hubTFT.setCursor(10, h - 13); hubTFT.print(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE");
+    pushChangedTftFrame(); return;
+  }
+
   if(hubLayoutId==7){ // TFT performance test; static elements are painted once.
     hubHeader(w,"TFT TEST");
     hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,29);hubTFT.print("TARGET FPS");
@@ -3306,7 +3337,7 @@ static void drawHubScreenSaverFrame() {
         const int16_t ax = w / 2 + (int16_t)(wave * spread);
         const int16_t bx = w / 2 - (int16_t)(wave * spread);
         const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF;
-        const uint16_t cb = depth > 0 ? HUB_PINK : HUB_VIOLET;
+        const uint16_t cb = depth > 0 ? HUB_CYAN : 0xF81F;
         if (y > top + 5) {
           if ((y % 10) == 0) hubTFT.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
           hubTFT.drawLine(prevAx, prevAy, ax, y, ca);
@@ -3429,6 +3460,7 @@ void updateSmartHub() {
     return;
   }
 
+  if (hubLayoutId >= 10 && (hubClockDirty || hubSensorDirty || hubWeatherDirty || hubLightDirty)) hubDisplayDirty = true;
   if (hubDisplayDirty && now - lastTftDrawAt >= 33) {
     hubDisplayDirty = false; hubClockDirty = false; hubSensorDirty = false; hubWeatherDirty = false; hubLightDirty = false;
     lastTftDrawAt = now;
