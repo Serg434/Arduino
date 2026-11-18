@@ -2584,6 +2584,8 @@ void setupSmartHubDisplay() {
   if (!displayPwmReady) LOG_ERR("TFT backlight PWM attach failed; using digital fallback");
   hubSPI.begin(TFT1_SCK, -1, TFT1_MOSI, TFT1_CS);
   hubTFT.initR(INITR_BLACKTAB);
+  LOG_B("TFT value patch canvas: %s (%u bytes)", hubValueCanvas.getBuffer() ? "READY" : "UNAVAILABLE",
+        (unsigned)(HUB_VALUE_CANVAS_W * HUB_VALUE_CANVAS_H * sizeof(uint16_t)));
   hubTFT.setSPISpeed(20000000); // Start at 20 MHz; validate 27 MHz on the physical module.
   hubTFT.setRotation(0);
   hubTFT.fillScreen(ST77XX_BLACK);
@@ -2955,7 +2957,15 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
   hubValueCanvas.setCursor(2, 2);
   hubValueCanvas.print(value);
   uint16_t *pixels = hubValueCanvas.getBuffer();
-  if (!pixels) return;
+  if (!pixels) {
+    // Keep the display functional if the small canvas allocation ever fails.
+    hubTFT.fillRect(x, y, w, h, bg);
+    hubTFT.setTextSize(textSize);
+    hubTFT.setTextColor(fg, bg);
+    hubTFT.setCursor(x + 2, y + 2);
+    hubTFT.print(value);
+    return;
+  }
   // Single address window; source rows use the canvas' fixed 114-pixel stride.
   hubTFT.startWrite();
   hubTFT.setAddrWindow(x, y, w, h);
