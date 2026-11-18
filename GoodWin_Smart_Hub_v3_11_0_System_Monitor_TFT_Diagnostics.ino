@@ -209,6 +209,7 @@ static float lastMatterTemperature = NAN;
 static float lastMatterHumidity = NAN;
 String weatherStatus = "Ожидание";
 String weatherProvider = "—";
+static volatile uint8_t weatherSourceMode = 0; // 0=Auto, 1=Open-Meteo, 2=wttr.in, 3=MET Norway
 static uint8_t hubTestFpsTarget = 20;
 static uint32_t hubTestLastFrameAt = 0;
 static uint32_t hubTestFpsWindowAt = 0;
@@ -436,6 +437,8 @@ uint8_t percentToMatter(uint8_t percent);
 void handleRoot();
 void handleApi();
 void handleSystemMetrics();
+void handleWeatherRefresh();
+void handleWeatherSource();
 void handleScanStart();
 void handleScanResults();
 void handleOn();
@@ -929,7 +932,7 @@ body[data-theme="light"] .toast{background:#263955;color:#fff}
 .hub-climate-card .status-item{min-width:0;min-height:67px;padding:10px;background:#071b1aaa;border-color:#397c5b88}
 .hub-weather-card .status-item{background:#071b2aaa;border-color:#397b9b88}
 .hub-climate-card .status-value{font-size:clamp(16px,2.4vw,21px);white-space:nowrap;color:#a5f0c5}
-.hub-weather-card .status-value{color:#a5eaff}
+.hub-weather-card .status-value{color:#a5eaff}.hub-weather-tools{display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end;margin:12px 0}.hub-weather-tools label{grid-column:1/-1;font-size:11px;color:#aebbd0}.hub-weather-tools select{min-width:0;width:100%;padding:10px;border:1px solid #344766;border-radius:12px;background:#0a1424;color:#f5f7ff}.hub-weather-tools button{white-space:nowrap}@media(max-width:430px){.hub-weather-tools{grid-template-columns:1fr}.hub-weather-tools button{width:100%}}
 .hub-climate-card .status-label{font-size:10px;letter-spacing:.06em;text-transform:uppercase}
 .hub-climate-card .hub-note{margin-top:13px}
 .climate-live-dot{color:#78dfaa!important;font-size:11px;font-weight:800;white-space:nowrap}
@@ -986,10 +989,10 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
  <div class="climate-zone hub-sensors-card" id="hubSensorsCard"><div class="climate-zone-head"><div><div class="eyebrow">INDOOR · DHT22</div><h3>В помещении</h3></div><span id="hubSensorState">Ожидание</span></div>
   <div class="hub-live"><div class="status-item"><div class="status-label">Температура</div><div class="status-value" id="hubIndoorTemp">—</div></div><div class="status-item"><div class="status-label">Влажность</div><div class="status-value" id="hubIndoorHumidity">—</div></div></div>
  </div>
- <div class="climate-zone hub-weather-card" id="hubWeatherCard"><div class="climate-zone-head"><div><div class="eyebrow">OUTDOOR · OPEN-METEO</div><h3>На улице</h3></div><span id="hubWeatherState">Ожидание</span></div>
+ <div class="climate-zone hub-weather-card" id="hubWeatherCard"><div class="climate-zone-head"><div><div class="eyebrow">OUTDOOR · WEATHER API</div><h3>На улице</h3></div><span id="hubWeatherState">Ожидание</span></div><div class="hub-weather-tools"><label for="hubWeatherSource">Источник погоды</label><select id="hubWeatherSource" class="field" onchange="setWeatherSource(this.value)"><option value="0">Авто · резервирование</option><option value="1">Open-Meteo</option><option value="2">wttr.in</option><option value="3">MET Norway</option></select><button class="btn btn-primary" id="hubWeatherRefresh" type="button" onclick="forceWeatherRefresh()">↻ Обновить сейчас</button></div>
   <div class="hub-live hub-weather-metrics"><div class="status-item"><div class="status-label">Температура</div><div class="status-value" id="hubOutdoor">—</div></div><div class="status-item"><div class="status-label">Ощущается</div><div class="status-value" id="hubFeelsLike">—</div></div><div class="status-item"><div class="status-label">Влажность</div><div class="status-value" id="hubOutdoorHumidity">—</div></div><div class="status-item"><div class="status-label">Давление</div><div class="status-value" id="hubPressure">—</div></div><div class="status-item"><div class="status-label">Ветер</div><div class="status-value" id="hubWind">—</div></div><div class="status-item"><div class="status-label">Облачность</div><div class="status-value" id="hubCloud">—</div></div><div class="status-item"><div class="status-label">UV-индекс</div><div class="status-value" id="hubUv">—</div></div><div class="status-item"><div class="status-label">Осадки</div><div class="status-value" id="hubRain">—</div></div></div>
  </div>
-</div><div class="hub-note">В помещении — показания DHT22. На улице — расширенные текущие условия Open-Meteo. Обновление каждые 15 минут.</div></section>
+</div><div class="hub-note">В помещении — показания DHT22. На улице — расширенные текущие условия Open-Meteo. Плановое обновление каждые 5 минут. Авто переключается на резервные источники при ошибке.</div></section>
 <section class="card section wifi-card"><div class="section-head"><h2>Wi-Fi менеджер</h2><span>NETWORK CONTROL</span></div>
 <div class="wifi-current"><div class="wifi-orb">⌁</div><div class="wifi-current-text"><small>ТЕКУЩЕЕ ПОДКЛЮЧЕНИЕ</small><strong id="currentSSID">Не подключено</strong><span id="wifiSignal">Ожидание подключения</span></div><button class="btn scan-button" onclick="scanNetworks()">⌁ Сканировать сети</button></div>
 <div id="scanState" class="scan-state">Нажми «Сканировать», чтобы найти доступные сети поблизости.</div><div id="networkList" class="network-list"></div>
@@ -1250,6 +1253,8 @@ async function saveHubConfig(){
   el.addEventListener('blur',()=>{hubBrightnessInteracting=false;});
   el.addEventListener('input',()=>{hubConfigDirty=true;hubConfigRevision++;document.getElementById('hubBrightnessValue').textContent=el.value+'%';});
  }if(id==='hubTestFps'){el.addEventListener('input',()=>{document.getElementById('hubTestFpsValue').textContent=el.value+' FPS';});}el.addEventListener('change',saveHubConfig);}});
+async function setWeatherSource(value){try{const r=await fetch("/weather/source?source="+encodeURIComponent(value),{method:"POST",cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();document.getElementById("hubWeatherState").textContent=d.message||"Источник сохранён · обновление…";}catch(e){document.getElementById("hubWeatherState").textContent="Ошибка выбора: "+e.message;}}
+async function forceWeatherRefresh(){const b=document.getElementById("hubWeatherRefresh");b.disabled=true;b.textContent="Запрос…";try{const r=await fetch("/weather/refresh",{method:"POST",cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);document.getElementById("hubWeatherState").textContent="Принудительное обновление…";}catch(e){document.getElementById("hubWeatherState").textContent="Ошибка запроса: "+e.message;}finally{setTimeout(()=>{b.disabled=false;b.textContent="↻ Обновить сейчас";},1800);}}
 async function updateHubTelemetry(){
  try{const r=await fetch('/hub/data',{cache:'no-store'});const d=await r.json();
   document.getElementById('hubIndoorTemp').textContent=d.indoorTemp==null?'—':Number(d.indoorTemp).toFixed(1)+' °C';
@@ -1263,10 +1268,10 @@ async function updateHubTelemetry(){
   document.getElementById('hubCloud').textContent=d.cloudCover==null?'—':Number(d.cloudCover).toFixed(0)+' %';
   document.getElementById('hubUv').textContent=d.uvIndex==null?'—':Number(d.uvIndex).toFixed(1);
   document.getElementById('hubRain').textContent=d.precipProbability==null?'—':d.precipProbability+'% · '+(d.precipitationMm==null?'—':Number(d.precipitationMm).toFixed(1))+' мм';
-  document.getElementById('hubWeatherState').textContent=(d.weatherStatus||'Нет статуса')+' · '+(d.weatherSource||'—');
+  document.getElementById('hubWeatherState').textContent=(d.weatherStatus||'Нет статуса')+' · '+(d.weatherSource||'—');const ws=document.getElementById('hubWeatherSource');if(ws&&ws.value!==String(d.weatherMode??0))ws.value=String(d.weatherMode??0);
  }catch(e){document.getElementById('hubWeatherState').textContent='Нет связи с ESP32';}
 }
-async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ";}}
+async function updateSystemMonitor(){if(!document.querySelector('[data-panel="system"].active'))return;try{const r=await fetch("/system",{cache:"no-store"});if(!r.ok)throw new Error("HTTP "+r.status);const d=await r.json();const mb=v=>(Number(v)/1024).toFixed(1)+" KB";document.getElementById("sysCpu").textContent=d.cpuMHz+" MHz";document.getElementById("sysTemp").textContent=Number(d.chipTempC).toFixed(1)+" °C";document.getElementById("sysHeap").textContent=mb(d.freeHeap);document.getElementById("sysMinHeap").textContent=mb(d.minFreeHeap);document.getElementById("sysLargest").textContent=mb(d.largestHeap);document.getElementById("sysPsram").textContent=d.psramTotal?mb(d.psramFree)+" / "+mb(d.psramTotal):"нет";document.getElementById("sysFlash").textContent=(Number(d.flashSize)/1048576).toFixed(1)+" MB";document.getElementById("sysRssi").textContent=d.wifiRssi===-127?"нет связи":d.wifiRssi+" dBm";const u=Number(d.uptime);document.getElementById("sysUptime").textContent=Math.floor(u/86400)+"д "+Math.floor(u%86400/3600)+"ч "+Math.floor(u%3600/60)+"м";document.getElementById("sysFps").textContent=d.tftFps+" FPS";document.getElementById("sysTftDraw").textContent=d.tftDrawUs+" µs (avg "+d.tftDrawAvgUs+")";document.getElementById("sysTftPhase").textContent=["PATCH 5×10","AREA 40×40","FULL 128×160"][d.tftPhase]||"—";document.getElementById("sysMonitorState").textContent="LIVE · "+new Date().toLocaleTimeString();}catch(e){document.getElementById("sysMonitorState").textContent="НЕТ СВЯЗИ · "+(e&&e.message?e.message:"ошибка запроса");}}
 loadHubConfig();updateHubTelemetry();updateSystemMonitor();setInterval(updateSystemMonitor,2000);setInterval(updateHubTelemetry,5000);setInterval(()=>{if(document.querySelector('[data-panel=\"screen\"].active'))loadHubConfig(true);},2000);
 
 </script>
@@ -1952,6 +1957,8 @@ void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
   server.on("/api", HTTP_GET, handleApi);
   server.on("/system", HTTP_GET, handleSystemMetrics);
+  server.on("/weather/refresh", HTTP_POST, handleWeatherRefresh);
+  server.on("/weather/source", HTTP_POST, handleWeatherSource);
   server.on("/hub/config", HTTP_GET, handleHubConfig);
   server.on("/hub/config", HTTP_POST, handleHubConfig);
   server.on("/hub/data", HTTP_GET, handleHubData);
@@ -3403,28 +3410,32 @@ static bool fetchMetNo(WeatherSnapshot &v){
 void weatherTask(void *parameter){
   (void)parameter;
   for(;;){
-    uint32_t nextDelay=180000;
-    if(WiFi.status()!=WL_CONNECTED){weatherStatus="Нет Wi-Fi";weatherProvider="—";}
+    uint32_t nextDelay=WEATHER_INTERVAL_MS;
+    if(WiFi.status()!=WL_CONNECTED){weatherStatus="Нет Wi-Fi";weatherProvider="—";nextDelay=60000UL;}
     else{
-      weatherStatus="Запрос Open-Meteo";
-      WeatherSnapshot primary;
-      bool ok=fetchOpenMeteo(primary);
-      if(ok)ok=applyWeatherSnapshot(primary,"Open-Meteo");
-      else{
-        weatherStatus="Резерв: wttr.in";
-        LOG_W("Primary weather provider unavailable; trying wttr.in fallback");
-        WeatherSnapshot backup;
-        if(fetchWttr(backup))ok=applyWeatherSnapshot(backup,"wttr.in");
-        else {
-          LOG_W("wttr.in unavailable; trying MET Norway fallback");
-          WeatherSnapshot tertiary;
-          if(fetchMetNo(tertiary))ok=applyWeatherSnapshot(tertiary,"MET Norway");
-        }
+      const uint8_t mode=weatherSourceMode;
+      bool ok=false;
+      WeatherSnapshot snapshot;
+      if(mode==0){
+        weatherStatus="Запрос Open-Meteo";
+        if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
+        if(!ok){weatherStatus="Резерв: wttr.in";LOG_W("Open-Meteo unavailable; trying wttr.in");if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");}
+        if(!ok){weatherStatus="Резерв: MET Norway";LOG_W("wttr.in unavailable; trying MET Norway");if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");}
+      }else if(mode==1){
+        weatherStatus="Запрос Open-Meteo";
+        if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
+      }else if(mode==2){
+        weatherStatus="Запрос wttr.in";
+        if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");
+      }else if(mode==3){
+        weatherStatus="Запрос MET Norway";
+        if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");
       }
       if(ok)nextDelay=WEATHER_INTERVAL_MS;
-      else{weatherStatus="Нет данных (оба источника)";LOG_ERR("All weather providers failed; keeping last valid readings");}
+      else{weatherStatus="Нет данных · источник недоступен";nextDelay=60000UL;LOG_ERR("Weather request failed; mode=%u",mode);}
     }
-    vTaskDelay(pdMS_TO_TICKS(nextDelay));
+    // Web request interrupts the wait and starts the next refresh immediately.
+    ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(nextDelay));
   }
 }
 
@@ -3489,6 +3500,25 @@ void handleHubConfig() {
     ",\"brightness\":" + String(displayBrightnessPercent) + ",\"testFps\":" + String(hubTestFpsTarget) + "}";
   server.send(200, "application/json; charset=utf-8", json);
 }
+void handleWeatherRefresh() {
+  if (!weatherTaskHandle) { server.send(503, "application/json", "{\"ok\":false,\"message\":\"Задача погоды не запущена\"}"); return; }
+  xTaskNotifyGive(weatherTaskHandle);
+  server.send(202, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"Запрос поставлен в очередь\"}");
+}
+
+void handleWeatherSource() {
+  if (!server.hasArg("source")) { server.send(400, "application/json", "{\"ok\":false,\"message\":\"Не указан источник\"}"); return; }
+  const int mode=server.arg("source").toInt();
+  if (mode<0 || mode>3) { server.send(400, "application/json", "{\"ok\":false,\"message\":\"Недопустимый источник\"}"); return; }
+  weatherSourceMode=(uint8_t)mode;
+  Preferences prefs;
+  if (prefs.begin("hubcfg",false)) { prefs.putUChar("wxsrc",(uint8_t)mode); prefs.end(); }
+  if (weatherTaskHandle) xTaskNotifyGive(weatherTaskHandle);
+  static const char *names[]={"Авто","Open-Meteo","wttr.in","MET Norway"};
+  String json="{\"ok\":true,\"message\":\"Источник: "+String(names[mode])+" · обновление…\"}";
+  server.send(200,"application/json; charset=utf-8",json);
+}
+
 void handleHubData() {
   String json = "{";
   json += "\"indoorTemp\":"; if (sensorValid) json += String(indoorTempC, 1); else json += "null"; json += ",";
@@ -3504,6 +3534,7 @@ void handleHubData() {
   json += "\"weatherSource\":\"" + jsonEscape(weatherProvider) + "\",";
   json += "\"precipProbability\":"; if (weatherValid && outdoorPrecipProbability >= 0) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
   json += "\"precipitationMm\":"; if (weatherValid) json += String(outdoorPrecipMm, 1); else json += "null"; json += ",";
+  json += "\"weatherMode\":" + String((uint8_t)weatherSourceMode) + ",";
   json += "\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + weatherStatus + "\"}";
   server.send(200, "application/json; charset=utf-8", json);
 }
@@ -3526,6 +3557,7 @@ void setup() {
   hubSaverId = statePrefs.getUChar("saver", 0); if (hubSaverId >= HUB_SAVER_COUNT) hubSaverId = 0;
   hubOrientation = statePrefs.getUChar("orient", 0); if (hubOrientation > 3) hubOrientation = 0;
   hubTestFpsTarget = statePrefs.getUChar("testFps", 20); if (hubTestFpsTarget < 1 || hubTestFpsTarget > 60) hubTestFpsTarget = 20;
+  weatherSourceMode = statePrefs.getUChar("wxsrc", 0); if (weatherSourceMode > 3) weatherSourceMode = 0;
   hubDisplayEnabled = statePrefs.getBool("display", true);
   hubTFT.setRotation(hubOrientation);
   displayMatterOn = hubDisplayEnabled;
