@@ -198,7 +198,7 @@ static uint8_t saverPulseRadius = 18;
 static int8_t saverPulseDirection = 1;
 static float saverLastTemperature = NAN;
 static float saverLastHumidity = NAN;
-static constexpr uint8_t HUB_LAYOUT_COUNT = 8;
+static constexpr uint8_t HUB_LAYOUT_COUNT = 10;
 bool hubDisplayEnabled = true;
 bool displayMatterOn = true;
 uint8_t displayBrightnessPercent = 85;
@@ -228,7 +228,7 @@ portMUX_TYPE hubDataMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t weatherTaskHandle = nullptr;
 static const char *HUB_LAYOUT_NAMES[] = {
   "Dashboard", "Часы крупно", "Погода крупно", "Домашний климат", "Дом + улица", "Состояние света",
-  "Aurora — погода PRO", "Тест TFT · FPS", "Погода + часы", "Домашний климат", "Улица + дом", "Минимализм 1", "Минимализм 2",
+  "Aurora — погода PRO", "Тест TFT · FPS", "Orbit — neon telemetry", "Terminal — monochrome", "Погода + часы", "Домашний климат", "Улица + дом", "Минимализм 1", "Минимализм 2",
   "Компактный 1", "Компактный 2", "Крупные цифры 1", "Крупные цифры 2", "Погода карточками", "Климат карточками",
   "Свет + климат", "Свет + погода", "Системный статус", "Wi-Fi статус", "Matter статус", "MQTT статус",
   "Вертикальный 1", "Вертикальный 2", "Вертикальный 3", "Ночной", "Контрастный", "Монохром",
@@ -976,7 +976,7 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 <section class="card section matter-pairing"><div class="section-head"><h2>Matter · Сопряжение</h2><span>LOCAL NETWORK</span></div><div class="pair-code" onclick="copyCode()"><strong id="pairCode">—</strong><span class="copy-label">▣ КОПИРОВАТЬ</span></div><div class="pair-note">Нажми на код, чтобы скопировать его. QR-код можно отсканировать в приложении умного дома.</div><div class="qr-wrap"><div id="qrcode"></div></div></section>
 <section class="card section hub-config-card" id="hubConfigCard"><div class="section-head"><div><div class="eyebrow">DISPLAY ENGINE</div><h2>Экран и оформление</h2></div><span>ST7735 · 128×160 / 160×128</span></div>
 <div class="hub-controls">
- <div class="hub-control"><label for="hubLayout">Макет экрана</label><select id="hubLayout"><option value="0">Dashboard — сводка</option><option value="1">Часы крупно</option><option value="2">Погода крупно</option><option value="3">Домашний климат</option><option value="4">Дом + улица</option><option value="5">Состояние света</option><option value="6">Aurora — погода PRO</option><option value="7">Тест TFT · FPS</option></select></div>
+ <div class="hub-control"><label for="hubLayout">Макет экрана</label><select id="hubLayout"><option value="0">Dashboard — сводка</option><option value="1">Часы крупно</option><option value="2">Погода крупно</option><option value="3">Домашний климат</option><option value="4">Дом + улица</option><option value="5">Состояние света</option><option value="6">Aurora — погода PRO</option><option value="7">Тест TFT · FPS</option><option value="8">Orbit — neon telemetry</option><option value="9">Terminal — monochrome</option></select></div>
  <div class="hub-control"><label for="hubOrientation">Ориентация дисплея</label><select id="hubOrientation"><option value="0">Портрет · 128×160</option><option value="1">Альбом · 160×128</option><option value="2">Портрет перевёрнутый · 128×160</option><option value="3">Альбом перевёрнутый · 160×128</option></select></div>
  <div class="hub-control"><label for="hubSaver">Заставка</label><select id="hubSaver"><option value="0">Выключена</option><option value="1">Часы</option><option value="2">Плавающая точка</option><option value="3">Звёзды</option><option value="4">Дождь</option><option value="5">Снег</option><option value="6">Облака</option><option value="7">Температура и влажность</option><option value="8">Волна</option><option value="9">Пульс</option><option value="10">Северное сияние</option></select><small class="hub-note">Заставка запускается после 60 секунд без действий. Любое изменение настроек или управления возвращает основной экран.</small></div>
  <div class="hub-control"><label for="hubBrightness">Яркость подсветки: <strong id="hubBrightnessValue">85%</strong></label><input id="hubBrightness" type="range" min="1" max="100" value="85"></div>
@@ -1812,7 +1812,10 @@ void handleApi() {
 void handleSystemMetrics() {
   String json = "{";
   json += "\"cpuMHz\":" + String(ESP.getCpuFreqMHz()) + ",";
-  json += "\"chipTempC\":" + (isnan(goodwinReadChipTemperatureC()) ? String("unknown") : String(goodwinReadChipTemperatureC(), 1)) + ",";
+  const float chipTempC = goodwinReadChipTemperatureC();
+  json += "\"chipTempC\":";
+  if (isfinite(chipTempC)) json += String(chipTempC, 1); else json += "null";
+  json += ",";
   json += "\"freeHeap\":" + String(ESP.getFreeHeap()) + ",";
   json += "\"minFreeHeap\":" + String(ESP.getMinFreeHeap()) + ",";
   json += "\"largestHeap\":" + String(ESP.getMaxAllocHeap()) + ",";
@@ -2663,7 +2666,8 @@ void hubProgress(int16_t x,int16_t y,int16_t w,int16_t h,uint8_t value,uint16_t 
   oldX=x;oldY=y;oldW=w;oldH=h;oldInner=inner;
 }
 void hubHeader(int16_t w,const char *section){
-  hubTFT.fillScreen(HUB_BG); hubTFT.setTextWrap(false);
+  // drawSmartHub() clears the background only when the layout/orientation changes.
+  hubTFT.setTextWrap(false);
   hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_BG);hubTFT.setCursor(5,5);hubTFT.print("GOODWIN");
   hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(55,5);hubTFT.print(section);
   // Compact connectivity glyph: three radio arcs and a status dot.
@@ -2708,6 +2712,43 @@ void drawSmartHub() {
     hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,143);hubTFT.print("SPI / TFT benchmark");
     hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;hubTestFrameNumber=0;
     return;
+  }
+
+  if(hubLayoutId==8){ // Orbit: instrument-style climate dashboard.
+    hubHeader(w,"ORBIT");
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE,HUB_BG); hubTFT.setCursor(8,25); hubTFT.print(timeText);
+    hubTFT.drawCircle(w/2,82,37,HUB_CYAN); hubTFT.drawCircle(w/2,82,33,HUB_LINE);
+    hubTFT.drawCircle(w/2,82,29,HUB_LINE); hubTFT.drawFastHLine(25,82,w-50,HUB_LINE);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(51,58); hubTFT.print("ROOM");
+    char v[18]; snprintf(v,sizeof(v),sensorValid?"%.1fC":"--.-C",sensorValid?indoorTempC:0.0f);
+    drawValueBox(28,70,72,22,HUB_BG,HUB_WHITE,2,v);
+    snprintf(v,sizeof(v),sensorValid?"%.0f%% RH":"--% RH",sensorValid?indoorHumidity:0.0f);
+    drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,v);
+    hubCard(5,122,57,31,HUB_PANEL); hubCard(66,122,57,31,HUB_PANEL2);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_PANEL); hubTFT.setCursor(10,126); hubTFT.print("OUTSIDE");
+    hubTFT.setTextColor(HUB_MUTED,HUB_PANEL2); hubTFT.setCursor(71,126); hubTFT.print("WIND");
+    snprintf(v,sizeof(v),weatherValid?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
+    drawValueBox(9,137,49,12,HUB_PANEL,HUB_WHITE,1,v);
+    snprintf(v,sizeof(v),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f);
+    drawValueBox(70,137,49,12,HUB_PANEL2,HUB_CYAN,1,v);
+    pushChangedTftFrame(); return;
+  }
+
+  if(hubLayoutId==9){ // Terminal: high-contrast monochrome telemetry.
+    hubHeader(w,"TERMINAL");
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_GREEN,HUB_BG); hubTFT.setCursor(8,25); hubTFT.print(timeText);
+    hubTFT.drawFastHLine(7,44,w-14,HUB_GREEN);
+    const char *labels[]={"ROOM TEMP","ROOM RH","OUT TEMP","WIND"};
+    const int16_t ys[]={49,73,97,121};
+    for(uint8_t i=0;i<4;i++){hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(9,ys[i]);hubTFT.print("> ");hubTFT.print(labels[i]);}
+    char v[18];
+    snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(72,47,48,13,HUB_BG,HUB_GREEN,1,v);
+    snprintf(v,sizeof(v),sensorValid?"%.0f %%":"-- %%",sensorValid?indoorHumidity:0.0f); drawValueBox(72,71,48,13,HUB_BG,HUB_GREEN,1,v);
+    snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(72,95,48,13,HUB_BG,HUB_GREEN,1,v);
+    snprintf(v,sizeof(v),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(72,119,48,13,HUB_BG,HUB_GREEN,1,v);
+    hubTFT.drawFastHLine(7,141,w-14,HUB_GREEN);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_GREEN,HUB_BG); hubTFT.setCursor(9,147); hubTFT.print("GOODWIN // LIVE");
+    pushChangedTftFrame(); return;
   }
 
   if(hubLayoutId==6){ // Aurora weather detail.
@@ -2875,6 +2916,14 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
 static void drawLayoutSensorPartial() {
   const bool landscape = hubTFT.width() > hubTFT.height();
   char value[20];
+  if (hubLayoutId == 8) {
+    snprintf(value,sizeof(value),sensorValid?"%.1fC":"--.-C",sensorValid?indoorTempC:0.0f); drawValueBox(28,70,72,22,HUB_BG,HUB_WHITE,2,value);
+    snprintf(value,sizeof(value),sensorValid?"%.0f%% RH":"--% RH",sensorValid?indoorHumidity:0.0f); drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,value); return;
+  }
+  if (hubLayoutId == 9) {
+    snprintf(value,sizeof(value),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(72,47,48,13,HUB_BG,HUB_GREEN,1,value);
+    snprintf(value,sizeof(value),sensorValid?"%.0f %%":"-- %%",sensorValid?indoorHumidity:0.0f); drawValueBox(72,71,48,13,HUB_BG,HUB_GREEN,1,value); return;
+  }
   if (hubLayoutId == 0) {
     snprintf(value, sizeof(value), sensorValid ? "%.1f" : "--.-", sensorValid ? indoorTempC : 0.0f);
     drawValueBox(landscape ? 12 : 8, 73, landscape ? 60 : 52, 18, HUB_PANEL, HUB_WHITE,
@@ -2899,6 +2948,14 @@ static void drawLayoutSensorPartial() {
 static void drawLayoutWeatherPartial() {
   const bool landscape = hubTFT.width() > hubTFT.height();
   char value[28];
+  if (hubLayoutId == 8) {
+    snprintf(value,sizeof(value),weatherValid?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f); drawValueBox(9,137,49,12,HUB_PANEL,HUB_WHITE,1,value);
+    snprintf(value,sizeof(value),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(70,137,49,12,HUB_PANEL2,HUB_CYAN,1,value); return;
+  }
+  if (hubLayoutId == 9) {
+    snprintf(value,sizeof(value),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(72,95,48,13,HUB_BG,HUB_GREEN,1,value);
+    snprintf(value,sizeof(value),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(72,119,48,13,HUB_BG,HUB_GREEN,1,value); return;
+  }
   if (hubLayoutId == 0) {
     snprintf(value, sizeof(value), weatherValid ? "%.1f" : "--.-", weatherValid ? outdoorTempC : 0.0f);
     drawValueBox(landscape ? 88 : 69, 73, landscape ? 61 : 52, 18, HUB_PANEL2, HUB_WHITE,
@@ -3281,7 +3338,12 @@ void updateSmartHub() {
   const uint32_t partialRenderStartedAt = micros();
   if (hubClockDirty) {
     hubClockDirty = false;
-    if (hubLayoutId == 0) drawDashboardClockPartial();
+    if (hubLayoutId == 8 || hubLayoutId == 9) {
+      hubTFT.fillRect(6,22,116,22,HUB_BG); hubTFT.setTextSize(2);
+      hubTFT.setTextColor(hubLayoutId==9?HUB_GREEN:HUB_WHITE,HUB_BG);
+      hubTFT.setCursor(8,25); hubTFT.print(timeText);
+    }
+    else if (hubLayoutId == 0) drawDashboardClockPartial();
     else if (hubLayoutId == 1) drawAnalogClockPartial();
     drew = true;
   }
