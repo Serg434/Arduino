@@ -1188,11 +1188,11 @@ async function loadHubConfig(silent=false){
  const testFps=document.getElementById('hubTestFps');
  // Never let the periodic poll move a slider while a finger/mouse/key is using it,
  // or while a local change is waiting for the ESP32 to acknowledge the save.
- if(hubConfigBusy||hubConfigDirty||hubConfigSaving||hubBrightnessInteracting||document.activeElement===slider)return;
+ if(hubConfigBusy||hubConfigDirty||hubConfigSaving||hubBrightnessInteracting||document.activeElement===slider||document.activeElement===testFps)return;
  hubConfigBusy=true;
  const requestRevision=hubConfigRevision;
  try{const r=await fetch('/hub/config',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
-  if(hubConfigDirty||hubConfigSaving||hubBrightnessInteracting||document.activeElement===slider||requestRevision!==hubConfigRevision)return;
+  if(hubConfigDirty||hubConfigSaving||hubBrightnessInteracting||document.activeElement===slider||document.activeElement===testFps||requestRevision!==hubConfigRevision)return;
   document.getElementById('hubLayout').value=d.layout??0;document.getElementById('hubSaver').value=d.saver??0;
   document.getElementById('hubOrientation').value=d.orientation??0;document.getElementById('hubDisplayEnabled').checked=!!d.display;
   // Server is authoritative only when the user is not editing the control.
@@ -1240,7 +1240,7 @@ async function updateHubTelemetry(){
   document.getElementById('hubCloud').textContent=d.cloudCover==null?'—':Number(d.cloudCover).toFixed(0)+' %';
   document.getElementById('hubUv').textContent=d.uvIndex==null?'—':Number(d.uvIndex).toFixed(1);
   document.getElementById('hubRain').textContent=d.precipProbability==null?'—':d.precipProbability+'% · '+(d.precipitationMm==null?'—':Number(d.precipitationMm).toFixed(1))+' мм';
-  document.getElementById('hubWeatherState').textContent=d.weatherStatus||'Нет статуса';
+  document.getElementById('hubWeatherState').textContent=(d.weatherStatus||'Нет статуса')+' · '+(d.weatherSource||'—');
  }catch(e){document.getElementById('hubWeatherState').textContent='Нет связи с ESP32';}
 }
 loadHubConfig();updateHubTelemetry();setInterval(updateHubTelemetry,5000);setInterval(()=>{if(document.querySelector('[data-panel=\"screen\"].active'))loadHubConfig(true);},2000);
@@ -3386,7 +3386,7 @@ void handleHubData() {
   json += "\"cloudCover\":"; if (weatherValid && !isnan(outdoorCloudCover)) json += String(outdoorCloudCover, 0); else json += "null"; json += ",";
   json += "\"uvIndex\":"; if (weatherValid && !isnan(outdoorUvIndex)) json += String(outdoorUvIndex, 1); else json += "null"; json += ",";
   json += "\"weatherSource\":\"" + jsonEscape(weatherProvider) + "\",";
-  json += "\"precipProbability\":"; if (weatherValid) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
+  json += "\"precipProbability\":"; if (weatherValid && outdoorPrecipProbability >= 0) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
   json += "\"precipitationMm\":"; if (weatherValid) json += String(outdoorPrecipMm, 1); else json += "null"; json += ",";
   json += "\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + weatherStatus + "\"}";
   server.send(200, "application/json; charset=utf-8", json);
