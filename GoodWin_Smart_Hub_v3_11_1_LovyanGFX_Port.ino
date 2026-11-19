@@ -3034,6 +3034,7 @@ static void drawExtendedLandscapeValues() {
       snprintf(v,sizeof(v),"UP %lu MIN",(unsigned long)(millis()/60000UL)); drawValueBox(10,52,62,22,black,fg,1,v);
       snprintf(v,sizeof(v),"HEAP %u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(87,52,62,22,black,HUB_CYAN,1,v);
       snprintf(v,sizeof(v),"RSSI %d dBm  MQTT %s",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127,mqttClient.connected()?"OK":"OFF"); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),"AI %lu / ANOM %lu",(unsigned long)hubAIEvents,(unsigned long)hubAIAnomalyCount); drawValueBox(10,126,140,14,black,HUB_CYAN,1,v);
       break;
     default:
       snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(10,52,62,22,black,fg,2,v);
@@ -3237,7 +3238,8 @@ static void drawExtendedLayoutValues() {
     case 41: // Diagnostics
       snprintf(v,sizeof(v),"UP %lu MIN",(unsigned long)(millis()/60000UL)); drawValueBox(10,50,106,16,HUB_PANEL,HUB_WHITE,1,v);
       snprintf(v,sizeof(v),"HEAP %u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,81,106,16,HUB_PANEL2,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),"RSSI %d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,112,106,16,HUB_BG,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),"RSSI %d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,106,106,14,HUB_BG,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),"AI %lu  ANOM %lu",(unsigned long)hubAIEvents,(unsigned long)hubAIAnomalyCount); drawValueBox(10,126,106,14,HUB_PANEL2,HUB_CYAN,1,v);
       break;
   }
 }
@@ -5526,7 +5528,15 @@ void handleHubData() {
   json += "\"precipProbability\":"; if (weatherValid && outdoorPrecipProbability >= 0) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
   json += "\"precipitationMm\":"; if (weatherValid) json += String(outdoorPrecipMm, 1); else json += "null"; json += ",";
   json += "\"weatherMode\":" + String((uint8_t)weatherSourceMode) + ",";
-  json += "\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + jsonEscape(String(weatherStatusCopy)) + "\"}";
+  json += "\"ai\":{\"mode\":\"ESP32-LOCAL-ADAPTIVE\",\"events\":" + String(hubAIEvents) +
+    ",\"anomalies\":" + String(hubAIAnomalyCount) + ",\"anomalyMask\":" + String(hubAIAnomalyMask) +
+    ",\"sensorSamples\":" + String(hubAISensorSamples) + ",\"providers\":[";
+  for (uint8_t i = 0; i < 3; ++i) {
+    if (i) json += ',';
+    json += "{\"id\":" + String(i) + ",\"ok\":" + String(hubAIProvider[i].success) +
+      ",\"fail\":" + String(hubAIProvider[i].failure) + ",\"avgLatencyMs\":" + String(hubAIProvider[i].avgLatencyMs) + "}";
+  }
+  json += "]},\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + jsonEscape(String(weatherStatusCopy)) + "\"}";
   server.send(200, "application/json; charset=utf-8", json);
 }
 
