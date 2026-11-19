@@ -60,7 +60,7 @@ static const char *goodwinFlashModeName(FlashMode_t mode) {
 }
 
 // ============================================================
-// GoodWin Smart Hub v3.11.3-dev LovyanGFX atomic UI + onboard adaptive agent | DMA partial UI + buffered screensavers + resilient weather
+// GoodWin Smart Hub v3.11.3-dev LovyanGFX atomic UI + local adaptive AI + immersive savers
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
 // Climate endpoint advertises the standard Temperature Sensor device type and exposes
 // Relative Humidity Measurement as an additional server cluster on the same endpoint.
@@ -3398,8 +3398,7 @@ void drawSmartHub() {
   if (hubLayoutId == 7) hubRenderTarget = &hubDisplay; // Raw SPI benchmark remains direct by design.
   else ensureHubMainCanvas();
   hubForceFullRedraw = true;
-  // A full layout render may repaint cards/labels underneath value widgets.
-  // Invalidate their snapshots so every value is restored over its true background.
+  // Rebuild every widget over its actual background before the scene is presented.
   hubInvalidateValueCache();
   hubProgressNeedsInit = true;
   if (!hubDisplayEnabled) {
@@ -3419,7 +3418,7 @@ void drawSmartHub() {
   const uint16_t tempColor=(sensorValid&&indoorTempC>=27.0f)?HUB_ORANGE:HUB_GREEN;
 
   if (hubLayoutId >= 10 && hubLayoutId <= 13) {
-    // Four compact visual prototypes, rendered directly to the ST7735.
+    // Four compact visual themes, rendered into the shared off-screen scene.
     const bool amber = hubLayoutId == 11;
     const uint16_t accent = amber ? HUB_YELLOW : (hubLayoutId == 13 ? 0xF81F : HUB_CYAN);
     const char *heading = hubLayoutId == 10 ? "DARK TECH" : amber ? "AMBER" : hubLayoutId == 12 ? "GLASS UI" : "CYBER";
@@ -3696,8 +3695,8 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
                          uint16_t bg, uint16_t fg, uint8_t textSize,
                          const char *value) {
   if (w <= 0 || h <= 0 || !value) return;
-  // Do not transmit unchanged values. The value is also fitted to the widget's
-  // real pixel dimensions so long negatives/status strings cannot invade cards.
+  // The value is fitted to the widget's real pixel dimensions so long negatives
+  // and status strings cannot invade neighbouring cards.
   if (w <= HUB_VALUE_CANVAS_W && h <= HUB_VALUE_CANVAS_H) {
     for (uint8_t i = 0; i < 16; ++i) {
       HubValueCacheEntry &entry = hubValueCache[i];
