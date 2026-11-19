@@ -4667,7 +4667,7 @@ static void drawHubScreenSaverFrame() {
       {
         const int16_t rx = cx + (int16_t)(sinf(now * 0.0021f) * 11.0f);
         const int16_t ry = h - 17 + (int16_t)(sinf(now * 0.004f) * 2.0f);
-        cv.fillEllipse(rx, ry, 5, 3, 0xC618);
+        cv.fillCircle(rx, ry, 3, 0xC618);
         cv.fillCircle(rx + 4, ry - 2, 2, 0xE71C);
         cv.fillCircle(rx + 3, ry - 4, 1, 0xFFFF);
         cv.drawLine(rx - 4, ry + 1, rx - 8, ry + 3, 0xC618);
