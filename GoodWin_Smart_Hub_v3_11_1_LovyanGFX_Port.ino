@@ -5091,7 +5091,9 @@ static bool weatherResolveHost(const char *host, IPAddress &resolved) {
     return false;
   }
   const uint32_t started = millis();
-  const int ok = WiFi.hostByName(host, resolved, 3000UL);
+  // Arduino-ESP32 Core 3.3.12 exposes only the two-argument overload.
+  // DNS resolution remains synchronous; this call does not provide a 3-second timeout.
+  const int ok = WiFi.hostByName(host, resolved);
   const uint32_t elapsed = millis() - started;
   if (ok == 1) {
     LOG_B("Weather DNS %s -> %s (%lu ms, RSSI=%d dBm)",
