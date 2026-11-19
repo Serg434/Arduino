@@ -4202,9 +4202,10 @@ static void drawHubScreenSaverFrame() {
                     cx + (int16_t)(cosf(a) * r), cy + (int16_t)(sinf(a) * r), 0x3A0D);
       }
       const float a = fmodf(phase * 0.72f, 6.283185f);
+      const float aDeg = a * 57.2957795f;
       const int16_t sx = cx + (int16_t)(cosf(a) * r);
       const int16_t sy = cy + (int16_t)(sinf(a) * r);
-      cv.drawArc(cx, cy, r, r - 3, a - 0.48f, a, 0x3A0D);
+      cv.drawArc(cx, cy, r, r - 3, aDeg - 28.0f, aDeg, 0x3A0D);
       cv.drawLine(cx, cy, sx, sy, HUB_CYAN);
       cv.drawWideLine(cx, cy, cx + (int16_t)(cosf(a) * r), cy + (int16_t)(sinf(a) * r), 1.1f, HUB_CYAN);
       for (uint8_t i = 0; i < 4; ++i) {
