@@ -3923,6 +3923,41 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
+    case 11: { // DNA: refined double helix on the shared premium background.
+      int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
+      for (int16_t y = 7; y < h - 7; y += 2) {
+        const float t = (float)y * 0.105f + phase;
+        const float wave = sinf(t);
+        const float depth = cosf(t);
+        const int16_t spread = 19 + (int16_t)(depth * 4.0f);
+        const int16_t ax = w / 2 + (int16_t)(wave * spread);
+        const int16_t bx = w / 2 - (int16_t)(wave * spread);
+        const uint16_t ca = depth > 0.0f ? HUB_CYAN : 0x05BF;
+        const uint16_t cb = depth > 0.0f ? 0xF81F : HUB_CYAN;
+        if (y > 7) {
+          cv.drawLine(prevAx, prevAy, ax, y, ca);
+          cv.drawLine(prevBx, prevBy, bx, y, cb);
+        }
+        if ((y % 12) < 2) {
+          cv.drawLine(ax, y, bx, y, 0x7BEF);
+          const uint8_t r = depth > 0.55f ? 3 : 2;
+          cv.fillCircle(ax, y, r, ca);
+          cv.fillCircle(bx, y, r, cb);
+          cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
+          cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
+        }
+        prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
+      }
+      for (uint8_t i = 0; i < 5; ++i) {
+        const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
+        const int16_t x = w / 2 + (int16_t)(sinf(p) * (28.0f + (i % 3) * 4.0f));
+        const int16_t y = 8 + (int16_t)((((now / (22U + i * 3U)) + i * 19U) % (uint32_t)max(1, h - 16)));
+        cv.fillCircle(x, y, 2, (i & 1) ? HUB_CYAN : HUB_YELLOW);
+        cv.drawPixel(x - 1, y - 1, HUB_WHITE);
+      }
+      break;
+    }
+
     case 12: { // Nebula Drift: layered orbital clouds and luminous star clusters.
       const int16_t cx = w / 2, cy = h / 2;
       for (uint8_t ring = 0; ring < 4; ++ring) {
