@@ -2815,17 +2815,18 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t bg
 
 void hubCard(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t fill, uint16_t edge=HUB_LINE) {
   if (w <= 4 || h <= 4) return;
-  const int16_t radius = min((int16_t)7, min((int16_t)(w / 2), (int16_t)(h / 2)));
-  // Layered shadow, fine outer stroke and restrained specular edge create depth
-  // without gradients that would consume the small panel's RAM or blur text.
-  hubTFT.fillRoundRect(x + 1, y + 2, w - 2, h - 2, radius, 0x0000);
+  const int16_t radius = min((int16_t)8, min((int16_t)(w / 2), (int16_t)(h / 2)));
+  // Depth is built entirely in RGB565: offset shadow, dark inset, edge stroke,
+  // restrained top specular and a short accent rail. No expensive full-screen FX.
+  hubTFT.fillRoundRect(x + 2, y + 3, w - 3, h - 3, radius, 0x0000);
   hubTFT.fillRoundRect(x, y, w, h, radius, fill);
+  if (w > 12 && h > 12) hubTFT.drawRoundRect(x + 1, y + 1, w - 2, h - 2, radius - 1, fill == 0xFFFF ? 0xE71C : 0x2149);
   hubTFT.drawRoundRect(x, y, w, h, radius, edge);
-  if (w > 18) hubTFT.drawFastHLine(x + 8, y + 1, w - 16, fill == 0xFFFF ? 0xD6FB : 0x2AEB);
-  if (h > 22 && w > 22) {
-    hubTFT.fillRoundRect(x + 2, y + 7, 2, h - 14, 1, edge);
-    hubTFT.drawFastHLine(x + 7, y + h - 2, w - 14, fill == 0xFFFF ? 0xE71C : 0x10A4);
+  if (w > 18) {
+    hubTFT.drawFastHLine(x + 7, y + 1, w - 14, fill == 0xFFFF ? 0xFFFF : 0x4E9F);
+    hubTFT.drawFastHLine(x + 7, y + h - 2, w - 14, fill == 0xFFFF ? 0xCE79 : 0x10A4);
   }
+  if (h > 28 && w > 28) hubTFT.fillRoundRect(x + 3, y + 8, 2, h - 16, 1, edge);
 }
 void hubLabel(int16_t x, int16_t y, const char *s, uint16_t color=HUB_MUTED, uint16_t bg=HUB_PANEL) {
   // Labels are transparent: the already-rendered card remains the exact pixel
@@ -2907,8 +2908,8 @@ void hubHeader(int16_t w,const char *section){
   // Shared premium chrome: accent rail, compact wordmark and live network glyph.
   hubTFT.setTextWrap(false);
   hubTFT.fillRect(5,4,2,10,HUB_CYAN);
-  hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_BG);hubTFT.setCursor(10,5);hubTFT.print("GOODWIN");
-  hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(57,5);hubTFT.print(section);
+  hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(10,5);hubTFT.print("GOODWIN");
+  hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(57,5);hubTFT.print(section);
   int16_t x=w-13;
   hubTFT.drawPixel(x-4,8,HUB_GREEN);hubTFT.drawLine(x-6,6,x-2,6,HUB_GREEN);hubTFT.drawLine(x-8,4,x,4,HUB_GREEN);
   hubTFT.fillCircle(x,10,2,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED);
@@ -2929,9 +2930,9 @@ static void catalogHeader(int16_t w, const char *section, uint16_t bg, uint16_t 
   hubTFT.setTextWrap(false);
   hubTFT.fillRect(5,4,2,10,accent);
   hubTFT.setTextSize(1);
-  hubTFT.setTextColor(accent, bg);
+  hubTFT.setTextColor(accent);
   hubTFT.setCursor(10,5); hubTFT.print("GOODWIN");
-  hubTFT.setTextColor(bg == 0xFFFF ? 0x0841 : HUB_MUTED, bg);
+  hubTFT.setTextColor(bg == 0xFFFF ? 0x0841 : HUB_MUTED);
   hubTFT.setCursor(57,5); hubTFT.print(section);
   const int16_t x = w - 13;
   hubTFT.drawPixel(x-4,8,HUB_GREEN);
@@ -2945,7 +2946,7 @@ static void catalogCard(int16_t x, int16_t y, int16_t w, int16_t h,
                         const char *label, uint16_t fill, uint16_t accent) {
   hubCard(x, y, w, h, fill, accent);
   hubTFT.setTextSize(1);
-  hubTFT.setTextColor(accent, fill);
+  hubTFT.setTextColor(accent);
   hubTFT.setCursor(x + 6, y + 5);
   hubTFT.print(label);
 }
@@ -3048,16 +3049,16 @@ static void drawExtendedLandscapeLayout(int16_t w, int16_t h) {
   const uint16_t accent = hubLayoutId == 31 ? HUB_GREEN : (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
   if (hubLayoutId == 40) {
     hubTFT.fillScreen(0x0000);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(0x39E7,0x0000);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(0x39E7);
     hubTFT.setCursor((w-42)/2,(h/2)-5); hubTFT.print("GOODWIN");
     hubTFT.drawFastHLine(w/2-18,h/2+9,36,HUB_CYAN);
     return;
   }
-  hubTFT.fillScreen(bg);
+  hubTFT.fillGradientRect(0, 0, w, h, bg == 0xFFFF ? 0xFFFF : (bg == 0x0000 ? 0x0000 : 0x10A5), bg);
   catalogHeader(w,catalogLayoutTitle(hubLayoutId),bg,accent);
   if (hubLayoutId == 34) {
     hubClockFace(w/2,62,29);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,bg); hubTFT.setCursor(9,101); hubTFT.print("ANALOG / LOCAL TIME");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(9,101); hubTFT.print("ANALOG / LOCAL TIME");
     drawExtendedLandscapeValues();
     return;
   }
@@ -3252,7 +3253,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
   if (hubLayoutId == 40) {
     hubTFT.fillScreen(0x0000);
     hubTFT.setTextSize(1);
-    hubTFT.setTextColor(0x39E7, 0x0000);
+    hubTFT.setTextColor(0x39E7);
     hubTFT.setCursor((w - 42) / 2, h / 2 - 5);
     hubTFT.print("GOODWIN");
     hubTFT.drawFastHLine(w / 2 - 18, h / 2 + 9, 36, HUB_CYAN);
@@ -3261,7 +3262,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
   if (hubLayoutId == 30) hubTFT.fillScreen(0x0000);
   else if (hubLayoutId == 33) hubTFT.fillScreen(0xFFFF);
   catalogHeader(w, catalogLayoutTitle(hubLayoutId), hubLayoutId == 33 ? 0xFFFF : (hubLayoutId == 30 ? 0x0000 : HUB_BG), accent);
-  hubTFT.setTextColor(hubLayoutId == 33 ? 0x0841 : accent, hubLayoutId == 33 ? 0xFFFF : HUB_BG);
+  hubTFT.setTextColor(hubLayoutId == 33 ? 0x0841 : accent);
 
   switch (hubLayoutId) {
     case 14:
@@ -3270,16 +3271,16 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       break;
     case 15:
       hubTFT.drawFastHLine(8,54,w-16,HUB_LINE); hubTFT.drawFastHLine(8,88,w-16,HUB_LINE); hubTFT.drawFastHLine(8,122,w-16,HUB_LINE);
-      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(8,48); hubTFT.print("INDOOR CLIMATE");
+      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(8,48); hubTFT.print("INDOOR CLIMATE");
       hubTFT.setCursor(8,82); hubTFT.print("OUTDOOR CONDITIONS"); hubTFT.setCursor(8,116); hubTFT.print("CONNECTIVITY");
       break;
     case 16:
-      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(8,31); hubTFT.print("LOCAL TIME");
+      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(8,31); hubTFT.print("LOCAL TIME");
       hubTFT.drawFastHLine(8,105,w-16,HUB_LINE); hubTFT.setCursor(8,108); hubTFT.print("INDOOR TEMPERATURE");
       break;
     case 17:
       catalogCard(5,38,118,91,"ROOM TEMPERATURE",HUB_PANEL,HUB_CYAN);
-      hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(8,137); hubTFT.print("LIVE CLIMATE SENSOR");
+      hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(8,137); hubTFT.print("LIVE CLIMATE SENSOR");
       break;
     case 18:
       hubWeatherIcon(w/2,47,1); catalogCard(5,77,57,69,"OUTSIDE",HUB_PANEL,HUB_CYAN);
@@ -3292,13 +3293,13 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
     case 20:
       hubBulbIcon(34,65,1,lightOn?HUB_YELLOW:HUB_MUTED);
       catalogCard(67,39,56,93,"CLIMATE",HUB_PANEL2,HUB_CYAN);
-      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(8,123); hubTFT.print("BRIGHTNESS");
+      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(8,123); hubTFT.print("BRIGHTNESS");
       hubProgress(8,139,112,7,brightnessPercent,HUB_YELLOW);
       break;
     case 21:
       hubBulbIcon(34,65,1,lightOn?HUB_YELLOW:HUB_MUTED);
       catalogCard(67,39,56,93,"OUTSIDE",HUB_PANEL2,HUB_CYAN);
-      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(8,123); hubTFT.print("GOODWIN LIGHT");
+      hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(8,123); hubTFT.print("GOODWIN LIGHT");
       hubProgress(8,139,112,7,brightnessPercent,HUB_YELLOW);
       break;
     case 22:
@@ -3308,23 +3309,23 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
     case 23:
       hubTFT.drawRoundRect(8,36,w-16,50,8,HUB_LINE);
       for(uint8_t i=0;i<5;i++){int bh=7+i*6;hubTFT.fillRoundRect(86+i*7,80-bh,5,bh,2,i<3?HUB_GREEN:HUB_CYAN);}
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,101);hubTFT.print("LOCAL NETWORK");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,101);hubTFT.print("LOCAL NETWORK");
       hubTFT.drawFastHLine(10,119,w-20,HUB_LINE);
       break;
     case 24:
       hubTFT.drawCircle(w/2,67,28,HUB_LINE); hubTFT.drawCircle(w/2,67,23,matterStarted?HUB_GREEN:HUB_RED);
       hubTFT.fillCircle(w/2,67,5,matterStarted?HUB_GREEN:HUB_RED);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,111);hubTFT.print("DEVICE COMMISSIONING");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,111);hubTFT.print("DEVICE COMMISSIONING");
       break;
     case 25:
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,37);hubTFT.print("BROKER CONNECTION");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,37);hubTFT.print("BROKER CONNECTION");
       hubTFT.drawRoundRect(8,53,w-16,35,7,HUB_LINE);
       hubTFT.fillCircle(w-20,70,5,mqttClient.connected()?HUB_GREEN:HUB_ORANGE);
       hubTFT.setCursor(10,101);hubTFT.print("MQTT TELEMETRY");
       hubTFT.drawFastHLine(10,116,w-20,HUB_LINE);
       break;
     case 26:
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,25);hubTFT.print("YOUR HOME AT A GLANCE");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,25);hubTFT.print("YOUR HOME AT A GLANCE");
       catalogCard(5,63,118,37,"ROOM",HUB_PANEL,HUB_CYAN); catalogCard(5,106,118,43,"COMFORT",HUB_PANEL2,HUB_CYAN);
       break;
     case 27:
@@ -3336,31 +3337,31 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       break;
     case 29:
       hubTFT.drawFastHLine(8,106,w-16,0x2149);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(0x5DDF,HUB_BG);hubTFT.setCursor(10,122);hubTFT.print("QUIET HOURS  /  AMBIENT");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(0x5DDF);hubTFT.setCursor(10,122);hubTFT.print("QUIET HOURS  /  AMBIENT");
       break;
     case 30:
       hubTFT.drawFastHLine(8,70,w-16,0xFFFF); hubTFT.drawFastHLine(8,105,w-16,0x07E0);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(0xFFFF,0x0000);hubTFT.setCursor(8,139);hubTFT.print("GOODWIN / HIGH CONTRAST");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(0xFFFF);hubTFT.setCursor(8,139);hubTFT.print("GOODWIN / HIGH CONTRAST");
       break;
     case 31:
       hubTFT.drawFastHLine(8,51,w-16,HUB_GREEN);hubTFT.drawFastHLine(8,139,w-16,HUB_GREEN);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_GREEN,HUB_BG);hubTFT.setCursor(10,38);hubTFT.print("SYSTEM CONSOLE");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_GREEN);hubTFT.setCursor(10,38);hubTFT.print("SYSTEM CONSOLE");
       break;
     case 32:
       hubWeatherIcon(w/2,43,1); catalogCard(5,75,118,72,"CURRENT CONDITIONS",HUB_PANEL,HUB_CYAN);
       break;
     case 33:
       hubTFT.fillRoundRect(5,28,118,122,10,0xFFFF);hubTFT.drawRoundRect(5,28,118,122,10,0xBDF7);
-      hubTFT.setTextColor(0x0841,0xFFFF);hubTFT.setTextSize(1);hubTFT.setCursor(12,39);hubTFT.print("WEATHER REPORT");
+      hubTFT.setTextColor(0x0841);hubTFT.setTextSize(1);hubTFT.setCursor(12,39);hubTFT.print("WEATHER REPORT");
       hubWeatherIcon(w/2,60,1);
       break;
     case 34:
       hubClockFace(w/2,76,min(w,h)/3);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,148);hubTFT.print("ANALOG / LOCAL TIME");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,148);hubTFT.print("ANALOG / LOCAL TIME");
       break;
     case 35:
       hubTFT.drawRoundRect(5,43,118,75,10,HUB_LINE);hubTFT.drawFastHLine(14,91,w-28,HUB_LINE);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,29);hubTFT.print("DIGITAL CHRONOMETER");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,29);hubTFT.print("DIGITAL CHRONOMETER");
       break;
     case 36:
       catalogCard(5,35,118,42,"ROOM SENSOR",HUB_PANEL,HUB_CYAN);catalogCard(5,84,118,57,"ESP32 HEALTH",HUB_PANEL2,HUB_GREEN);
@@ -3380,7 +3381,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       break;
     case 41:
       hubTFT.drawRoundRect(6,29,116,116,7,HUB_LINE);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(12,37);hubTFT.print("DEVICE TELEMETRY");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(12,37);hubTFT.print("DEVICE TELEMETRY");
       for(uint8_t i=0;i<4;i++)hubTFT.drawFastHLine(12,68+i*19,104,0x2149);
       break;
   }
@@ -3409,7 +3410,7 @@ void drawSmartHub() {
   static uint8_t previousLayout=255, previousOrientation=255;
   const int16_t w=hubTFT.width(), h=hubTFT.height();
   const bool landscape=w>h;
-  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubInvalidateValueCache();hubTFT.fillScreen(HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
+  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubInvalidateValueCache();hubTFT.fillGradientRect(0,0,w,h,0x10A5,HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
   const uint16_t tempColor=(sensorValid&&indoorTempC>=27.0f)?HUB_ORANGE:HUB_GREEN;
 
   if (hubLayoutId >= 10 && hubLayoutId <= 13) {
@@ -3418,28 +3419,28 @@ void drawSmartHub() {
     const uint16_t accent = amber ? HUB_YELLOW : (hubLayoutId == 13 ? 0xF81F : HUB_CYAN);
     const char *heading = hubLayoutId == 10 ? "DARK TECH" : amber ? "AMBER" : hubLayoutId == 12 ? "GLASS UI" : "CYBER";
     hubTFT.drawRoundRect(4, 4, w - 8, h - 8, 8, accent);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(accent, HUB_BG); hubTFT.setCursor(10, 10); hubTFT.print(heading);
-    hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(w - 44, 10); hubTFT.print("GW / 01");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(accent); hubTFT.setCursor(10, 10); hubTFT.print(heading);
+    hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(w - 44, 10); hubTFT.print("GW / 01");
     hubTFT.drawFastHLine(9, 23, w - 18, HUB_LINE);
-    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG); hubTFT.setCursor(10, 31); hubTFT.print(timeText);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(10, 53); hubTFT.print(dateText);
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(10, 31); hubTFT.print(timeText);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(10, 53); hubTFT.print(dateText);
     const uint16_t panel = hubLayoutId == 12 ? 0x10A4 : HUB_PANEL;
     hubCard(8, 68, w - 16, 34, panel);
-    hubTFT.setTextColor(HUB_MUTED, panel); hubTFT.setCursor(14, 73); hubTFT.print("INDOOR");
+    hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(14, 73); hubTFT.print("INDOOR");
     char v[18]; snprintf(v, sizeof(v), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
     drawValueBox(14, 84, 55, 15, panel, HUB_WHITE, 1, v);
     snprintf(v, sizeof(v), sensorValid ? "%.0f%% RH" : "--%% RH", sensorValid ? indoorHumidity : 0.0f);
     drawValueBox(w - 66, 84, 52, 15, panel, accent, 1, v);
     hubCard(8, 108, (w - 22) / 2, 36, HUB_PANEL);
     hubCard(14 + (w - 22) / 2, 108, (w - 22) / 2, 36, HUB_PANEL2);
-    hubTFT.setTextColor(HUB_MUTED, HUB_PANEL); hubTFT.setCursor(13, 113); hubTFT.print("OUTSIDE");
-    hubTFT.setTextColor(HUB_MUTED, HUB_PANEL2); hubTFT.setCursor(19 + (w - 22) / 2, 113); hubTFT.print("WIND");
+    hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(13, 113); hubTFT.print("OUTSIDE");
+    hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(19 + (w - 22) / 2, 113); hubTFT.print("WIND");
     snprintf(v, sizeof(v), weatherValid ? "%.1fC" : "--.-C", weatherValid ? outdoorTempC : 0.0f);
     drawValueBox(12, 126, (w - 30) / 2, 13, HUB_PANEL, HUB_WHITE, 1, v);
     snprintf(v, sizeof(v), weatherValid ? "%.0fkm/h" : "--km/h", weatherValid ? outdoorWindSpeedKmh : 0.0f);
     drawValueBox(18 + (w - 22) / 2, 126, (w - 30) / 2, 13, HUB_PANEL2, accent, 1, v);
     hubTFT.drawFastHLine(10, h - 18, w - 20, accent);
-    hubTFT.setTextColor(accent, HUB_BG); hubTFT.setCursor(10, h - 13); hubTFT.print(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE");
+    hubTFT.setTextColor(accent); hubTFT.setCursor(10, h - 13); hubTFT.print(WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE");
     pushChangedTftFrame(); return;
   }
 
@@ -3451,29 +3452,29 @@ void drawSmartHub() {
 
   if(hubLayoutId==7){ // TFT performance test; static elements are painted once.
     hubHeader(w,"TFT TEST");
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,29);hubTFT.print("TARGET FPS");
-    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN,HUB_BG);hubTFT.setCursor(8,43);hubTFT.print(hubTestFpsTarget);hubTFT.print(" FPS");
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,70);hubTFT.print("MEASURED FPS");
-    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setCursor(8,84);hubTFT.print(hubTestMeasuredFps);hubTFT.print(" FPS");
+    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(8,29);hubTFT.print("TARGET FPS");
+    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(8,43);hubTFT.print(hubTestFpsTarget);hubTFT.print(" FPS");
+    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(8,70);hubTFT.print("MEASURED FPS");
+    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(8,84);hubTFT.print(hubTestMeasuredFps);hubTFT.print(" FPS");
     hubTFT.drawRoundRect(10,116,w-20,18,4,HUB_LINE);
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,143);hubTFT.print("SPI / TFT benchmark");
+    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(8,143);hubTFT.print("SPI / TFT benchmark");
     hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;hubTestFrameNumber=0;
     return;
   }
 
   if(hubLayoutId==8){ // Orbit: instrument-style climate dashboard.
     hubHeader(w,"ORBIT");
-    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE,HUB_BG); hubTFT.setCursor(8,25); hubTFT.print(timeText);
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(8,25); hubTFT.print(timeText);
     hubTFT.drawCircle(w/2,82,37,HUB_CYAN); hubTFT.drawCircle(w/2,82,33,HUB_LINE);
     hubTFT.drawCircle(w/2,82,29,HUB_LINE); hubTFT.drawFastHLine(25,82,w-50,HUB_LINE);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_BG); hubTFT.setCursor(51,58); hubTFT.print("ROOM");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(51,58); hubTFT.print("ROOM");
     char v[18]; snprintf(v,sizeof(v),sensorValid?"%.1fC":"--.-C",sensorValid?indoorTempC:0.0f);
     drawValueBox(28,70,72,22,HUB_BG,HUB_WHITE,2,v);
     snprintf(v,sizeof(v),sensorValid?"%.0f%% RH":"--%% RH",sensorValid?indoorHumidity:0.0f);
     drawValueBox(35,94,58,12,HUB_BG,HUB_CYAN,1,v);
     hubCard(5,122,57,31,HUB_PANEL); hubCard(66,122,57,31,HUB_PANEL2);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,HUB_PANEL); hubTFT.setCursor(10,126); hubTFT.print("OUTSIDE");
-    hubTFT.setTextColor(HUB_MUTED,HUB_PANEL2); hubTFT.setCursor(71,126); hubTFT.print("WIND");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(10,126); hubTFT.print("OUTSIDE");
+    hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(71,126); hubTFT.print("WIND");
     snprintf(v,sizeof(v),weatherValid?"%.1fC":"--.-C",weatherValid?outdoorTempC:0.0f);
     drawValueBox(9,137,49,12,HUB_PANEL,HUB_WHITE,1,v);
     snprintf(v,sizeof(v),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f);
@@ -3483,18 +3484,18 @@ void drawSmartHub() {
 
   if(hubLayoutId==9){ // Terminal: high-contrast monochrome telemetry.
     hubHeader(w,"TERMINAL");
-    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_GREEN,HUB_BG); hubTFT.setCursor(8,25); hubTFT.print(timeText);
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_GREEN); hubTFT.setCursor(8,25); hubTFT.print(timeText);
     hubTFT.drawFastHLine(7,44,w-14,HUB_GREEN);
     const char *labels[]={"ROOM TEMP","ROOM RH","OUT TEMP","WIND"};
     const int16_t ys[]={49,73,97,121};
-    for(uint8_t i=0;i<4;i++){hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(9,ys[i]);hubTFT.print("> ");hubTFT.print(labels[i]);}
+    for(uint8_t i=0;i<4;i++){hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(9,ys[i]);hubTFT.print("> ");hubTFT.print(labels[i]);}
     char v[18];
     snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(72,47,48,13,HUB_BG,HUB_GREEN,1,v);
     snprintf(v,sizeof(v),sensorValid?"%.0f %%":"-- %%",sensorValid?indoorHumidity:0.0f); drawValueBox(72,71,48,13,HUB_BG,HUB_GREEN,1,v);
     snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(72,95,48,13,HUB_BG,HUB_GREEN,1,v);
     snprintf(v,sizeof(v),weatherValid?"%.0f km/h":"-- km/h",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(72,119,48,13,HUB_BG,HUB_GREEN,1,v);
     hubTFT.drawFastHLine(7,141,w-14,HUB_GREEN);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_GREEN,HUB_BG); hubTFT.setCursor(9,147); hubTFT.print("GOODWIN // LIVE");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_GREEN); hubTFT.setCursor(9,147); hubTFT.print("GOODWIN // LIVE");
     pushChangedTftFrame(); return;
   }
 
@@ -3502,24 +3503,24 @@ void drawSmartHub() {
     hubHeader(w,"AURORA WX");
     if (landscape) {
       hubWeatherIcon(28,52,1);
-      hubTFT.setTextSize(3); hubTFT.setTextColor(HUB_WHITE,HUB_BG); hubTFT.setCursor(56,31);
+      hubTFT.setTextSize(3); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(56,31);
       if(weatherValid && !isnan(outdoorTempC)){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(58,60);
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(58,60);
       hubTFT.print("FEELS "); if(weatherValid&&!isnan(outdoorFeelsLikeC)){hubTFT.print(outdoorFeelsLikeC,1);hubTFT.print("C");}else hubTFT.print("--");
       hubCard(5,78,73,43,HUB_PANEL); hubCard(82,78,73,43,HUB_PANEL2);
-      hubLabel(12,85,"HUMIDITY"); hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN,HUB_PANEL);hubTFT.setCursor(12,99);if(weatherValid&&!isnan(outdoorHumidity)){hubTFT.print(outdoorHumidity,0);hubTFT.print("%");}else hubTFT.print("--%");
-      hubLabel(89,85,"PRESSURE",HUB_MUTED,HUB_PANEL2); hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(89,99);if(weatherValid&&!isnan(outdoorPressureHpa)){hubTFT.print(outdoorPressureHpa,0);}else hubTFT.print("----");
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(6,126);hubTFT.print("WIND ");if(weatherValid&&!isnan(outdoorWindSpeedKmh)){hubTFT.print(outdoorWindSpeedKmh,0);hubTFT.print("km/h");}else hubTFT.print("--");
+      hubLabel(12,85,"HUMIDITY"); hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(12,99);if(weatherValid&&!isnan(outdoorHumidity)){hubTFT.print(outdoorHumidity,0);hubTFT.print("%");}else hubTFT.print("--%");
+      hubLabel(89,85,"PRESSURE",HUB_MUTED,HUB_PANEL2); hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(89,99);if(weatherValid&&!isnan(outdoorPressureHpa)){hubTFT.print(outdoorPressureHpa,0);}else hubTFT.print("----");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(6,126);hubTFT.print("WIND ");if(weatherValid&&!isnan(outdoorWindSpeedKmh)){hubTFT.print(outdoorWindSpeedKmh,0);hubTFT.print("km/h");}else hubTFT.print("--");
       hubTFT.setCursor(82,126);hubTFT.print("CLOUD ");if(weatherValid&&!isnan(outdoorCloudCover)){hubTFT.print(outdoorCloudCover,0);hubTFT.print("%");}else hubTFT.print("--");
     } else {
       hubWeatherIcon(100,43,1);
-      hubTFT.setTextSize(3);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setCursor(7,31);
+      hubTFT.setTextSize(3);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(7,31);
       if(weatherValid&&!isnan(outdoorTempC)){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(8,62);hubTFT.print("FEELS LIKE ");if(weatherValid&&!isnan(outdoorFeelsLikeC)){hubTFT.print(outdoorFeelsLikeC,1);hubTFT.print("C");}else hubTFT.print("--");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(8,62);hubTFT.print("FEELS LIKE ");if(weatherValid&&!isnan(outdoorFeelsLikeC)){hubTFT.print(outdoorFeelsLikeC,1);hubTFT.print("C");}else hubTFT.print("--");
       hubCard(5,79,57,31,HUB_PANEL);hubCard(66,79,57,31,HUB_PANEL2);
-      hubLabel(10,85,"HUM");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN,HUB_PANEL);hubTFT.setCursor(10,96);if(weatherValid&&!isnan(outdoorHumidity)){hubTFT.print(outdoorHumidity,0);hubTFT.print("%");}else hubTFT.print("--");
-      hubLabel(71,85,"hPa",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(71,96);if(weatherValid&&!isnan(outdoorPressureHpa)){hubTFT.print(outdoorPressureHpa,0);}else hubTFT.print("----");
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(7,119);hubTFT.print("WIND ");if(weatherValid&&!isnan(outdoorWindSpeedKmh)){hubTFT.print(outdoorWindSpeedKmh,0);hubTFT.print("km/h");}else hubTFT.print("--");
+      hubLabel(10,85,"HUM");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(10,96);if(weatherValid&&!isnan(outdoorHumidity)){hubTFT.print(outdoorHumidity,0);hubTFT.print("%");}else hubTFT.print("--");
+      hubLabel(71,85,"hPa",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(71,96);if(weatherValid&&!isnan(outdoorPressureHpa)){hubTFT.print(outdoorPressureHpa,0);}else hubTFT.print("----");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(7,119);hubTFT.print("WIND ");if(weatherValid&&!isnan(outdoorWindSpeedKmh)){hubTFT.print(outdoorWindSpeedKmh,0);hubTFT.print("km/h");}else hubTFT.print("--");
       hubTFT.setCursor(7,132);hubTFT.print("CLOUD ");if(weatherValid&&!isnan(outdoorCloudCover)){hubTFT.print(outdoorCloudCover,0);hubTFT.print("%");}else hubTFT.print("--");
       hubTFT.setCursor(7,145);hubTFT.print("RAIN ");if(weatherValid&&outdoorPrecipProbability>=0){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%");}else hubTFT.print("--");
       hubTFT.setCursor(72,145);hubTFT.print("UV ");if(weatherValid&&!isnan(outdoorUvIndex)){hubTFT.print(outdoorUvIndex,1);}else hubTFT.print("--");
@@ -3532,9 +3533,9 @@ void drawSmartHub() {
     hubHeader(w,"CLOCK");
     const int16_t cx=w/2,cy=landscape?62:78,r=landscape?34:42;
     hubClockFace(cx,cy,r);
-    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_BG);
+    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);
     int16_t tw=timeText.length()*12;hubTFT.setCursor((w-tw)/2,landscape?98:130);hubTFT.print(timeText);
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor((w-48)/2,landscape?117:148);hubTFT.print(dateText.substring(0,5));
+    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor((w-48)/2,landscape?117:148);hubTFT.print(dateText.substring(0,5));
     pushChangedTftFrame();
     return;
   }
@@ -3542,12 +3543,12 @@ void drawSmartHub() {
   if(hubLayoutId==2){ // Weather hero
     hubHeader(w,"WEATHER");
     if(landscape){
-      hubWeatherIcon(38,61,1);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setTextSize(2);hubTFT.setCursor(78,43);
+      hubWeatherIcon(38,61,1);hubTFT.setTextColor(HUB_WHITE);hubTFT.setTextSize(2);hubTFT.setCursor(78,43);
       if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubCard(7,91,146,28,HUB_PANEL);hubDropIcon(20,103,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(32,101);hubTFT.print("RAIN CHANCE");hubTFT.setCursor(111,101);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%");}else hubTFT.print("--");
+      hubCard(7,91,146,28,HUB_PANEL);hubDropIcon(20,103,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(32,101);hubTFT.print("RAIN CHANCE");hubTFT.setCursor(111,101);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%");}else hubTFT.print("--");
     }else{
-      hubWeatherIcon(64,49,2);hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?2:3);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setCursor((weatherValid && outdoorTempC < -9.9f)?10:20,76);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubCard(7,119,114,31,HUB_PANEL);hubDropIcon(19,132,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(31,126);hubTFT.print("RAIN CHANCE");hubTFT.setCursor(31,138);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%  ");hubTFT.print(outdoorPrecipMm,1);hubTFT.print("mm");}else hubTFT.print("Waiting for data");
+      hubWeatherIcon(64,49,2);hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?2:3);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor((weatherValid && outdoorTempC < -9.9f)?10:20,76);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
+      hubCard(7,119,114,31,HUB_PANEL);hubDropIcon(19,132,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(31,126);hubTFT.print("RAIN CHANCE");hubTFT.setCursor(31,138);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%  ");hubTFT.print(outdoorPrecipMm,1);hubTFT.print("mm");}else hubTFT.print("Waiting for data");
     }
     pushChangedTftFrame();
     return;
@@ -3557,12 +3558,12 @@ void drawSmartHub() {
     hubHeader(w,"INDOOR");
     if(landscape){
       hubCard(6,28,72,91,HUB_PANEL);hubCard(82,28,72,91,HUB_PANEL2);
-      hubThermoIcon(15,39,tempColor);hubLabel(33,43,"TEMP");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(13,76);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
-      hubHumidityIcon(91,42,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_PANEL2);hubTFT.setCursor(108,47);hubTFT.print("HUM");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(90,78);if(sensorValid){hubTFT.print(indoorHumidity,1);hubTFT.print("%");}else hubTFT.print("--.-%");
+      hubThermoIcon(15,39,tempColor);hubLabel(33,43,"TEMP");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(13,76);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
+      hubHumidityIcon(91,42,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(108,47);hubTFT.print("HUM");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(90,78);if(sensorValid){hubTFT.print(indoorHumidity,1);hubTFT.print("%");}else hubTFT.print("--.-%");
     }else{
       hubCard(6,27,116,57,HUB_PANEL);hubCard(6,91,116,59,HUB_PANEL2);
-      hubThermoIcon(16,39,tempColor);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL);hubTFT.setCursor(39,38);hubTFT.print("TEMPERATURE");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(39,57);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubHumidityIcon(17,103,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_PANEL2);hubTFT.setCursor(39,104);hubTFT.print("HUMIDITY");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(39,119);if(sensorValid){hubTFT.print(indoorHumidity,1);hubTFT.print("%");}else hubTFT.print("--.-%");
+      hubThermoIcon(16,39,tempColor);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(39,38);hubTFT.print("TEMPERATURE");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(39,57);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
+      hubHumidityIcon(17,103,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN);hubTFT.setCursor(39,104);hubTFT.print("HUMIDITY");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(39,119);if(sensorValid){hubTFT.print(indoorHumidity,1);hubTFT.print("%");}else hubTFT.print("--.-%");
     }
     pushChangedTftFrame();
     return;
@@ -3572,12 +3573,12 @@ void drawSmartHub() {
     hubHeader(w,"CLIMATE");
     if(landscape){
       hubCard(6,27,72,91,HUB_PANEL);hubCard(82,27,72,91,HUB_PANEL2);
-      hubThermoIcon(14,38,tempColor);hubLabel(32,43,"HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setTextSize((sensorValid && (indoorTempC < -9.9f || indoorTempC >= 100.0f))?1:2);hubTFT.setCursor(12,77);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
-      hubWeatherIcon(118,44,1);hubLabel(96,74,"OUTSIDE",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?1:2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(87,92);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
+      hubThermoIcon(14,38,tempColor);hubLabel(32,43,"HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setTextSize((sensorValid && (indoorTempC < -9.9f || indoorTempC >= 100.0f))?1:2);hubTFT.setCursor(12,77);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
+      hubWeatherIcon(118,44,1);hubLabel(96,74,"OUTSIDE",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?1:2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(87,92);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
     }else{
       hubCard(6,27,116,55,HUB_PANEL);hubCard(6,88,116,62,HUB_PANEL2);
-      hubThermoIcon(15,39,tempColor);hubLabel(38,39,"HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(39,57);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
-      hubCloudIcon(27,112,1,HUB_CYAN);hubLabel(49,105,"OUTSIDE",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(49,123);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
+      hubThermoIcon(15,39,tempColor);hubLabel(38,39,"HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(39,57);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
+      hubCloudIcon(27,112,1,HUB_CYAN);hubLabel(49,105,"OUTSIDE",HUB_MUTED,HUB_PANEL2);hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(49,123);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-C");
     }
     pushChangedTftFrame();
     return;
@@ -3586,33 +3587,52 @@ void drawSmartHub() {
   if(hubLayoutId==5){ // Light graphic status
     hubHeader(w,"LIGHT");
     hubBulbIcon(w/2,landscape?47:58,1,lightOn?HUB_YELLOW:HUB_MUTED);
-    hubTFT.setTextSize(2);hubTFT.setTextColor(lightOn?HUB_YELLOW:HUB_WHITE,HUB_BG);
+    hubTFT.setTextSize(2);hubTFT.setTextColor(lightOn?HUB_YELLOW:HUB_WHITE);
     const char *state=lightOn?"ON":"OFF";int16_t sw=(int16_t)strlen(state)*12;hubTFT.setCursor((w-sw)/2,landscape?78:98);hubTFT.print(state);
     hubCard(landscape?18:8,landscape?99:121,landscape?124:112,landscape?23:29,HUB_PANEL);
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL);hubTFT.setCursor(landscape?25:15,landscape?107:128);hubTFT.print("BRIGHTNESS");
-    hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(landscape?105:90,landscape?107:128);hubTFT.print(brightnessPercent);hubTFT.print("%");
+    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(landscape?25:15,landscape?107:128);hubTFT.print("BRIGHTNESS");
+    hubTFT.setTextColor(HUB_WHITE);hubTFT.setCursor(landscape?105:90,landscape?107:128);hubTFT.print(brightnessPercent);hubTFT.print("%");
     hubProgress(landscape?25:15,landscape?115:140,landscape?110:90,6,brightnessPercent,HUB_YELLOW);
     pushChangedTftFrame();
     return;
   }
 
-  // Dashboard: clock + two climate cards + rain + lamp status.
+  // New GoodWin dashboard: time hero, live indoor/outdoor cards, precipitation and lamp.
   hubHeader(w,"HOME");
-  if(landscape){
-    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setCursor(7,23);hubTFT.print(timeText);
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(91,29);hubTFT.print(dateText.substring(0,5));
-    hubCard(5,45,73,47,HUB_PANEL);hubCard(82,45,73,47,HUB_PANEL2);
-    hubThermoMini(10,52,tempColor);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL);hubTFT.setCursor(29,54);hubTFT.print("HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setTextSize((sensorValid && (indoorTempC < -9.9f || indoorTempC >= 100.0f))?1:2);hubTFT.setCursor(12,72);if(sensorValid){hubTFT.print(indoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
-    hubCloudIcon(98,57,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL2);hubTFT.setCursor(119,54);hubTFT.print("OUT");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?1:2);hubTFT.setCursor(88,72);if(weatherValid){hubTFT.print(outdoorTempC,1);hubTFT.print("C");}else hubTFT.print("--.-");
-    hubCard(5,98,150,24,HUB_PANEL);hubDropIcon(16,108,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(28,106);hubTFT.print("RAIN");hubTFT.setCursor(67,106);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%  ");hubTFT.print(outdoorPrecipMm,1);hubTFT.print("mm");}else hubTFT.print("--");
-  }else{
-    hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_BG);hubTFT.setCursor(7,23);hubTFT.print(timeText);
-    hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(82,30);hubTFT.print(dateText.substring(0,5));
-    hubCard(5,45,57,48,HUB_PANEL);hubCard(66,45,57,48,HUB_PANEL2);
-    hubThermoMini(9,52,tempColor);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL);hubTFT.setCursor(27,54);hubTFT.print("HOME");hubTFT.setTextSize(2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(10,75);if(sensorValid){hubTFT.print(indoorTempC,1);}else hubTFT.print("--.-");
-    hubCloudIcon(84,60,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_PANEL2);hubTFT.setCursor(103,54);hubTFT.print("OUT");hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f)?1:2);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(71,75);if(weatherValid){hubTFT.print(outdoorTempC,1);}else hubTFT.print("--.-");
-    hubCard(5,99,118,25,HUB_PANEL);hubDropIcon(15,109,1,HUB_CYAN);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL);hubTFT.setCursor(27,107);hubTFT.print("RAIN");hubTFT.setCursor(59,107);if(weatherValid){hubTFT.print(outdoorPrecipProbability);hubTFT.print("%");}else hubTFT.print("--");
-    hubCard(5,129,118,24,HUB_PANEL2);hubTFT.fillCircle(16,141,4,lightOn?HUB_YELLOW:HUB_MUTED);hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_WHITE,HUB_PANEL2);hubTFT.setCursor(27,137);hubTFT.print(lightOn?"LIGHT ON":"LIGHT OFF");hubTFT.setCursor(88,137);hubTFT.print(brightnessPercent);hubTFT.print("%");
+  if (landscape) {
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(7,23); hubTFT.print(timeText);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(91,29); hubTFT.print(dateText.substring(0,5));
+    hubCard(5,45,73,49,HUB_PANEL,HUB_CYAN); hubCard(82,45,73,49,HUB_PANEL2,0x7DFF);
+    hubThermoMini(10,51,tempColor); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(29,53); hubTFT.print("INDOOR");
+    hubTFT.setTextSize((sensorValid && (indoorTempC < -9.9f || indoorTempC >= 100.0f)) ? 1 : 2);
+    hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(12,69); if(sensorValid) hubTFT.printf("%.1fC",indoorTempC); else hubTFT.print("--.-C");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN); hubTFT.setCursor(12,84); if(sensorValid) hubTFT.printf("RH %.0f%%",indoorHumidity); else hubTFT.print("RH --%");
+    hubWeatherIcon(98,56,1); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(119,53); hubTFT.print("OUT");
+    hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f) ? 1 : 2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(88,69);
+    if(weatherValid) hubTFT.printf("%.1fC",outdoorTempC); else hubTFT.print("--.-C");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN); hubTFT.setCursor(88,84); if(weatherValid) hubTFT.printf("W %.0fkm/h",outdoorWindSpeedKmh); else hubTFT.print("W --");
+    hubCard(5,100,150,23,HUB_PANEL); hubDropIcon(16,110,1,HUB_CYAN); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(28,108); hubTFT.print("PRECIP");
+    hubTFT.setCursor(77,108); if(weatherValid && outdoorPrecipProbability >= 0) hubTFT.printf("%d%%  %.1fmm",outdoorPrecipProbability,outdoorPrecipMm); else hubTFT.print("--");
+    hubCard(5,128,150,25,HUB_PANEL2,HUB_YELLOW); hubTFT.fillCircle(17,140,4,lightOn?HUB_YELLOW:HUB_MUTED);
+    hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(29,136); hubTFT.print(lightOn?"LIGHT ACTIVE":"LIGHT OFF");
+    hubTFT.setTextColor(HUB_YELLOW); hubTFT.setCursor(112,136); hubTFT.printf("%u%%",brightnessPercent);
+  } else {
+    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(7,23); hubTFT.print(timeText);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(82,30); hubTFT.print(dateText.substring(0,5));
+    hubCard(5,45,57,49,HUB_PANEL,HUB_CYAN); hubCard(66,45,57,49,HUB_PANEL2,0x7DFF);
+    hubThermoMini(9,51,tempColor); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(27,53); hubTFT.print("HOME");
+    hubTFT.setTextSize((sensorValid && indoorTempC < -9.9f) ? 1 : 2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(10,68);
+    if(sensorValid) hubTFT.printf("%.1f",indoorTempC); else hubTFT.print("--.-");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN); hubTFT.setCursor(10,84); if(sensorValid) hubTFT.printf("RH %.0f%%",indoorHumidity); else hubTFT.print("RH --%");
+    hubWeatherIcon(84,59,1); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(103,53); hubTFT.print("OUT");
+    hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f) ? 1 : 2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(71,68);
+    if(weatherValid) hubTFT.printf("%.1f",outdoorTempC); else hubTFT.print("--.-");
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN); hubTFT.setCursor(71,84); if(weatherValid) hubTFT.printf("W %.0f",outdoorWindSpeedKmh); else hubTFT.print("W --");
+    hubCard(5,99,118,25,HUB_PANEL,HUB_CYAN); hubDropIcon(15,109,1,HUB_CYAN); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(27,107); hubTFT.print("RAIN");
+    hubTFT.setCursor(59,107); if(weatherValid && outdoorPrecipProbability >= 0) hubTFT.printf("%d%%",outdoorPrecipProbability); else hubTFT.print("--");
+    hubCard(5,129,118,24,HUB_PANEL2,HUB_YELLOW); hubTFT.fillCircle(16,141,4,lightOn?HUB_YELLOW:HUB_MUTED);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(27,137); hubTFT.print(lightOn?"LIGHT ON":"LIGHT OFF");
+    hubTFT.setTextColor(HUB_YELLOW); hubTFT.setCursor(88,137); hubTFT.printf("%u%%",brightnessPercent);
   }
   pushChangedTftFrame();
 }
@@ -3685,7 +3705,7 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
   if (hubRenderTarget != &hubDisplay) {
     // Paint directly into the off-screen RGB565 scene; never expose a clear/print gap.
     hubTFT.fillRect(x, y, w, h, bg); hubTFT.setTextWrap(false); hubTFT.setTextSize(textSize);
-    hubTFT.setTextColor(fg, bg); hubTFT.setCursor(x + 2, y + 2); hubTFT.print(value); return;
+    hubTFT.setTextColor(fg); hubTFT.setCursor(x + 2, y + 2); hubTFT.print(value); return;
   }
   if (w > HUB_VALUE_CANVAS_W || h > HUB_VALUE_CANVAS_H) {
     // Defensive fallback for future widgets larger than the reusable patch.
