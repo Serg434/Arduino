@@ -3273,7 +3273,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       break;
     case 34:
       hubClockFace(w/2,76,min(w,h)/3);
-      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,132);hubTFT.print("ANALOG / LOCAL TIME");
+      hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,148);hubTFT.print("ANALOG / LOCAL TIME");
       break;
     case 35:
       hubTFT.drawRoundRect(5,43,118,75,10,HUB_LINE);hubTFT.drawFastHLine(14,91,w-28,HUB_LINE);
