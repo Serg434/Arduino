@@ -2183,7 +2183,9 @@ void setupWebServer() {
     server.send(302, "text/plain", "");
   });
   server.begin();
-  LOG_H("HTTP server started on port 80");
+  LOG_H("HTTP server started on port 80; mode=%u STA=%s AP=%s GW=%s MASK=%s",
+    (unsigned)WiFi.getMode(), WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str(),
+    WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str());
 }
 
 // ============================================================
@@ -2375,7 +2377,9 @@ bool connectSavedWiFi() {
     return false;
   }
   WiFi.setAutoReconnect(true);
-  LOG_W("Connected; IP=%s", WiFi.localIP().toString().c_str());
+  LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
+    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
+    WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
 #if !CONFIG_ENABLE_CHIPOBLE
   // On the original ESP32 Matter build, this helper enables STA IPv6 for CHIP.
   // Run it only after the saved network has proven reachable, so a failed Wi-Fi
@@ -5702,15 +5706,20 @@ void setup() {
 }
 
 void loop() {
+  // Service HTTP both before and after the display update. A complete TFT scene
+  // can take ~41 ms; the second poll prevents a request arriving during rendering
+  // from waiting for the next loop iteration.
   server.handleClient();
   updateSmartHub();
+  server.handleClient();
   static uint32_t lastSerialHeartbeatAt=0;
   if((uint32_t)(millis()-lastSerialHeartbeatAt)>=30000UL){
     lastSerialHeartbeatAt=millis();
     char weatherStatusCopy[64], weatherProviderCopy[24];
     copyWeatherText(weatherStatusCopy, sizeof(weatherStatusCopy), weatherProviderCopy, sizeof(weatherProviderCopy));
-    LOG_S("Heartbeat WiFi=%s RSSI=%d Matter=%s Fabric=%s heap=%u weather=%s/%s testFPS=%u",
-      WiFi.status()==WL_CONNECTED?"Y":"N",WiFi.status()==WL_CONNECTED?WiFi.RSSI():0,
+    LOG_S("Heartbeat WiFi=%s RSSI=%d IP=%s GW=%s mode=%u HTTP=80 Matter=%s Fabric=%s heap=%u weather=%s/%s testFPS=%u",
+      WiFi.status()==WL_CONNECTED?"Y":"N", WiFi.status()==WL_CONNECTED?WiFi.RSSI():0,
+      WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), (unsigned)WiFi.getMode(),
       Matter.isDeviceConnected()?"Y":"N",Matter.isDeviceCommissioned()?"Y":"N",ESP.getFreeHeap(),
       weatherStatusCopy,weatherProviderCopy,hubTestMeasuredFps);
   }
