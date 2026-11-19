@@ -264,6 +264,7 @@ static constexpr uint32_t HUB_SAVER_COMPLEX_FRAME_MS = 100;
 static uint32_t hubLastActivityAt = 0;
 static uint32_t hubSaverLastFrameAt = 0;
 static bool hubSaverActive = false;
+static bool hubSaverCanvasFullScreen = false;
 static uint32_t hubSaverLastValueAt = 0;
 static int16_t saverDotX = 0, saverDotY = 0, saverDotVX = 2, saverDotVY = 1;
 static uint8_t saverDotRadius = 5;
@@ -3917,7 +3918,10 @@ static void hubInvalidateValueCache();
 static void initHubScreenSaver() {
   const int16_t w = hubDisplay.width();
   const int16_t h = hubDisplay.height();
-  const int16_t bandHeight = h - 43;
+  // Matrix, Star Warp, the four Windows 95 classics and Neon Rift are immersive
+  // full-screen scenes. Other savers keep the branded chrome and compact canvas.
+  hubSaverCanvasFullScreen = (hubSaverId == 13 || hubSaverId == 21 || (hubSaverId >= 22 && hubSaverId <= 26));
+  const int16_t bandHeight = hubSaverCanvasFullScreen ? h : h - 43;
 
   // One shared RGB565 scene buffer is used by every animated saver. The
   // visible animation area is composed completely off-screen and transferred
@@ -3957,25 +3961,25 @@ static void initHubScreenSaver() {
   hubInvalidateValueCache();
   hubDisplay.fillScreen(HUB_BG);
 
-  // Shared frame chrome: the same title, divider and footer are used by every
-  // saver. The animation canvas begins below the header and ends above footer.
-  static const char *SAVER_TITLES[32] = {
-    "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
-    "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
-    "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
-    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WINDOWS 95", "STARFIELD SIMULATION",
-    "3D PIPES CLASSIC", "3D MAZE CLASSIC", "UE5 / NEON RIFT", "PLASMA FIELD", "LAVA LAMP",
-    "VORTEX TUNNEL", "RAIN ON GLASS", "PIXEL FIRE"
-  };
-  hubDisplay.setTextSize(1);
-  hubDisplay.setTextColor(HUB_CYAN, HUB_BG);
-  hubDisplay.setCursor(7, 7);
-  hubDisplay.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
-  hubDisplay.drawFastHLine(7, 19, w - 14, HUB_LINE);
-  hubDisplay.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
-  hubDisplay.setTextColor(HUB_MUTED, HUB_BG);
-  hubDisplay.setCursor(7, h - 11);
-  hubDisplay.print("GOODWIN  /  ESP32");
+  if (!hubSaverCanvasFullScreen) {
+    static const char *SAVER_TITLES[32] = {
+      "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
+      "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
+      "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
+      "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WINDOWS 95", "STARFIELD SIMULATION",
+      "3D PIPES CLASSIC", "3D MAZE CLASSIC", "UE5 / NEON RIFT", "PLASMA FIELD", "LAVA LAMP",
+      "VORTEX TUNNEL", "RAIN ON GLASS", "PIXEL FIRE"
+    };
+    hubDisplay.setTextSize(1);
+    hubDisplay.setTextColor(HUB_CYAN, HUB_BG);
+    hubDisplay.setCursor(7, 7);
+    hubDisplay.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
+    hubDisplay.drawFastHLine(7, 19, w - 14, HUB_LINE);
+    hubDisplay.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
+    hubDisplay.setTextColor(HUB_MUTED, HUB_BG);
+    hubDisplay.setCursor(7, h - 11);
+    hubDisplay.print("GOODWIN  /  ESP32");
+  }
 
   saverDotX = w / 3;
   saverDotY = max(12, bandHeight / 3);
@@ -4059,7 +4063,7 @@ static void initHubScreenSaver() {
 static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
   // Distinct scene palettes: cinematic Matrix/Windows starfield are near-black;
   // the premium GoodWin family keeps its restrained midnight-blue atmosphere.
-  if (hubSaverId == 13 || hubSaverId == 21 || hubSaverId == 23) {
+  if (hubSaverId == 13 || hubSaverId == 21 || (hubSaverId >= 22 && hubSaverId <= 25)) {
     cv.fillScreen(0x0000);
     if (hubSaverId == 13) {
       for (int16_t x = 5; x < w; x += 12) cv.drawFastVLine(x, 0, h, 0x0100);
@@ -4771,7 +4775,7 @@ static void drawHubScreenSaverFrame() {
     // buffer unchanged until the destination DMA engine has finished reading it.
     // LGFX_Sprite::pushSprite owns the destination write transaction.
     // Avoid nesting it inside a manual startWrite()/endWrite() pair.
-    cv.pushSprite(0, 25);
+    cv.pushSprite(0, hubSaverCanvasFullScreen ? 0 : 25);
     hubDisplay.waitDMA();
   }
 
