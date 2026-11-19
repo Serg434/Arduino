@@ -2933,9 +2933,9 @@ static void drawExtendedLayoutValues() {
       break;
     case 31: // Monochrome terminal
       drawValueBox(10,28,106,18,HUB_BG,HUB_GREEN,2,timeText.c_str());
-      snprintf(v,sizeof(v),"> ROOM T  %.1f",sensorValid?indoorTempC:0.0f); drawValueBox(10,64,106,14,HUB_BG,HUB_GREEN,1,v);
-      snprintf(v,sizeof(v),"> ROOM RH %.0f",sensorValid?indoorHumidity:0.0f); drawValueBox(10,88,106,14,HUB_BG,HUB_GREEN,1,v);
-      snprintf(v,sizeof(v),"> OUT T   %.1f",weatherValid?outdoorTempC:0.0f); drawValueBox(10,112,106,14,HUB_BG,HUB_GREEN,1,v);
+      snprintf(v,sizeof(v),"> ROOM T  %.1f",sensorValid?indoorTempC:0.0f); drawValueBox(10,82,106,14,HUB_BG,HUB_GREEN,1,v);
+      snprintf(v,sizeof(v),"> ROOM RH %.0f",sensorValid?indoorHumidity:0.0f); drawValueBox(10,106,106,14,HUB_BG,HUB_GREEN,1,v);
+      snprintf(v,sizeof(v),"> OUT T   %.1f",weatherValid?outdoorTempC:0.0f); drawValueBox(10,130,106,14,HUB_BG,HUB_GREEN,1,v);
       break;
     case 32: // Weather dark
       snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,59,106,26,HUB_PANEL,HUB_WHITE,2,v);
@@ -2943,9 +2943,9 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),weatherValid?"WIND %.0f  RAIN %d%%":"WIND --  RAIN --",weatherValid?outdoorWindSpeedKmh:0.0f,weatherValid?outdoorPrecipProbability:0); drawValueBox(10,128,106,14,HUB_BG,HUB_MUTED,1,v);
       break;
     case 33: // Weather light
-      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,59,106,26,0xFFFF,0x0841,2,v);
-      snprintf(v,sizeof(v),weatherValid?"HUM %.0f%%":"HUM --%%",weatherValid?outdoorHumidity:0.0f); drawValueBox(10,99,106,14,0xFFFF,0x0841,1,v);
-      snprintf(v,sizeof(v),weatherValid?"PRESS %.0f hPa":"PRESS ----",weatherValid?outdoorPressureHpa:0.0f); drawValueBox(10,128,106,14,0xFFFF,0x0841,1,v);
+      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,84,106,26,0xFFFF,0x0841,2,v);
+      snprintf(v,sizeof(v),weatherValid?"HUM %.0f%%":"HUM --%%",weatherValid?outdoorHumidity:0.0f); drawValueBox(10,116,106,14,0xFFFF,0x0841,1,v);
+      snprintf(v,sizeof(v),weatherValid?"PRESS %.0f hPa":"PRESS ----",weatherValid?outdoorPressureHpa:0.0f); drawValueBox(10,136,106,14,0xFFFF,0x0841,1,v);
       break;
     case 34: // Analog clock
       drawValueBox(10,129,106,16,HUB_BG,HUB_WHITE,1,timeText.c_str());
@@ -4183,6 +4183,7 @@ void updateSmartHub() {
   if (wifiConnected != lastWifiConnected) {
     lastWifiConnected = wifiConnected;
     hubDisplayDirty = true; // Header connectivity indicator changed.
+    hubForceFullRedraw = true;
   }
 
   if (!hubDisplayEnabled) {
