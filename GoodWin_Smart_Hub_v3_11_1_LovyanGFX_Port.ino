@@ -4658,8 +4658,8 @@ static void drawHubScreenSaverFrame() {
         const uint8_t walls = outside ? 0x0F : saverMazeWalls[(uint8_t)my][(uint8_t)mx];
         const uint8_t leftDir = (uint8_t)((dir + 3) & 3), rightDir = (uint8_t)((dir + 1) & 3);
         const int16_t nw = (w / 2 - 5) / (depth + 1), fw = (w / 2 - 5) / (depth + 2);
-        const int16_t nt = 7 + depth * 13, nb = h - 7 - depth * 13;
-        const int16_t ft = 7 + (depth + 1) * 13, fb = h - 7 - (depth + 1) * 13;
+        const int16_t nt = 7 + depth * 10, nb = h - 7 - depth * 10;
+        const int16_t ft = 7 + (depth + 1) * 10, fb = h - 7 - (depth + 1) * 10;
         const uint16_t shade = depth == 0 ? 0x4208 : depth == 1 ? 0x3186 : depth == 2 ? 0x2104 : 0x1082;
         if (walls & bits[leftDir]) {
           cv.fillTriangle(cx - nw, nt, cx - fw, ft, cx - fw, fb, shade);
