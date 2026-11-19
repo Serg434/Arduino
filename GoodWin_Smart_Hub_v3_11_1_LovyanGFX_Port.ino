@@ -3887,25 +3887,10 @@ static void initHubScreenSaver() {
   }
 }
 
-static uint16_t saverBlend565(uint16_t a, uint16_t b, uint8_t amount) {
-  const uint8_t ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
-  const uint8_t br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
-  const uint8_t r = ar + (((int16_t)br - ar) * amount) / 255;
-  const uint8_t g = ag + (((int16_t)bg - ag) * amount) / 255;
-  const uint8_t bl = ab + (((int16_t)bb - ab) * amount) / 255;
-  return ((uint16_t)r << 11) | ((uint16_t)g << 5) | bl;
-}
-
 static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
-  // Premium uninterrupted midnight gradient: no graph-paper grid or busy rails.
-  // The background is rebuilt in RAM, never erased directly on the TFT.
-  const uint16_t top = 0x0208;       // ink navy
-  const uint16_t bottom = 0x10A5;    // subtle blue-violet lift
-  for (int16_t y = 0; y < h; ++y) {
-    const uint8_t t = (uint8_t)((uint32_t)y * 255UL / (uint32_t)max(1, h - 1));
-    cv.drawFastHLine(0, y, w, saverBlend565(top, bottom, t));
-  }
-  // Quiet atmospheric glow and edge accents; kept deliberately low contrast.
+  // LovyanGFX native radial gradient: a quiet midnight base with a soft
+  // atmospheric blue lift. No graph-paper grid or high-contrast decoration.
+  cv.fillGradientRect(0, 0, w, h, 0x0208, 0x10A5);
   cv.drawFastHLine(8, 3, w - 16, 0x19A7);
   cv.drawFastHLine(8, h - 4, w - 16, 0x10A4);
   cv.drawPixel(8, 8, 0x3A0D);
