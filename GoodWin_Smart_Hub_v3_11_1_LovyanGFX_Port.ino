@@ -3021,10 +3021,10 @@ static void drawExtendedLayoutValues() {
       drawValueBox(8,130,112,14,HUB_BG,HUB_MUTED,1,timeText.c_str());
       break;
     case 18: // Weather cards
-      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,61,48,22,HUB_PANEL,HUB_WHITE,1,v);
-      snprintf(v,sizeof(v),weatherValid?"FEELS %.1f":"FEELS --.-",weatherValid?outdoorFeelsLikeC:0.0f); drawValueBox(67,61,50,14,HUB_PANEL2,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),weatherValid?"WIND %.0f":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(10,112,48,16,HUB_PANEL,HUB_WHITE,1,v);
-      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(67,112,50,16,HUB_PANEL2,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,95,48,22,HUB_PANEL,HUB_WHITE,1,v);
+      snprintf(v,sizeof(v),weatherValid?"FEELS %.1f":"FEELS --.-",weatherValid?outdoorFeelsLikeC:0.0f); drawValueBox(67,95,50,14,HUB_PANEL2,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),weatherValid?"WIND %.0f":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(10,120,48,16,HUB_PANEL,HUB_WHITE,1,v);
+      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(67,120,50,16,HUB_PANEL2,HUB_CYAN,1,v);
       break;
     case 19: // Climate cards
       snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(12,72,45,24,HUB_PANEL,HUB_WHITE,1,v);
@@ -3074,9 +3074,9 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),sensorValid?"HUMIDITY  %.0f%%":"HUMIDITY  --%%",sensorValid?indoorHumidity:0.0f); drawValueBox(10,119,106,16,HUB_PANEL2,HUB_WHITE,1,v);
       break;
     case 27: // Vertical weather
-      snprintf(v,sizeof(v),weatherValid?"%.1f":"--.-",weatherValid?outdoorTempC:0.0f); drawValueBox(10,58,106,32,HUB_PANEL,HUB_WHITE,3,v);
-      snprintf(v,sizeof(v),weatherValid?"WIND %.0f km/h":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(10,104,106,16,HUB_PANEL2,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(10,132,106,14,HUB_BG,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),weatherValid?"%.1f":"--.-",weatherValid?outdoorTempC:0.0f); drawValueBox(10,88,106,32,HUB_PANEL,HUB_WHITE,3,v);
+      snprintf(v,sizeof(v),weatherValid?"WIND %.0f km/h":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(10,122,106,16,HUB_PANEL2,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(10,137,106,14,HUB_BG,HUB_MUTED,1,v);
       break;
     case 28: // Vertical climate
       snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(10,62,106,24,HUB_PANEL,HUB_WHITE,2,v);
@@ -3099,9 +3099,9 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),"> OUT T   %.1f",weatherValid?outdoorTempC:0.0f); drawValueBox(10,130,106,14,HUB_BG,HUB_GREEN,1,v);
       break;
     case 32: // Weather dark
-      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,59,106,26,HUB_PANEL,HUB_WHITE,2,v);
-      snprintf(v,sizeof(v),weatherValid?"FEELS %.1f C":"FEELS --.- C",weatherValid?outdoorFeelsLikeC:0.0f); drawValueBox(10,99,106,14,HUB_PANEL2,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),weatherValid?"WIND %.0f  RAIN %d%%":"WIND --  RAIN --",weatherValid?outdoorWindSpeedKmh:0.0f,weatherValid?outdoorPrecipProbability:0); drawValueBox(10,128,106,14,HUB_BG,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,91,106,26,HUB_PANEL,HUB_WHITE,2,v);
+      snprintf(v,sizeof(v),weatherValid?"FEELS %.1f C":"FEELS --.- C",weatherValid?outdoorFeelsLikeC:0.0f); drawValueBox(10,120,106,14,HUB_PANEL2,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),weatherValid?"WIND %.0f  RAIN %d%%":"WIND --  RAIN --",weatherValid?outdoorWindSpeedKmh:0.0f,weatherValid?outdoorPrecipProbability:0); drawValueBox(10,137,106,10,HUB_BG,HUB_MUTED,1,v);
       break;
     case 33: // Weather light
       snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,84,106,26,0xFFFF,0x0841,2,v);
