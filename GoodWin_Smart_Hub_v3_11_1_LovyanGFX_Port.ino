@@ -3940,7 +3940,7 @@ static void initHubScreenSaver() {
   // Matrix, Star Warp, the four Windows 95 classics and Neon Rift are immersive
   // full-screen scenes. Other savers keep the branded chrome and compact canvas.
   hubSaverCanvasFullScreen = (hubSaverId == 13 || hubSaverId == 21 || (hubSaverId >= 22 && hubSaverId <= 26));
-  const int16_t bandHeight = hubSaverCanvasFullScreen ? h : h - 43;
+  int16_t bandHeight = hubSaverCanvasFullScreen ? h : h - 43;
 
   // One shared RGB565 scene buffer is used by every animated saver. The
   // visible animation area is composed completely off-screen and transferred
@@ -3956,11 +3956,24 @@ static void initHubScreenSaver() {
       if (hubSaverCanvas) {
         hubSaverCanvas->setColorDepth(16);
         void *spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
+        // A full-screen 40 KB scene is preferred. If the heap is fragmented,
+        // gracefully fall back to the proven compact 117 px saver band.
+        if (!spriteBuffer && hubSaverCanvasFullScreen && h > 43) {
+          delete hubSaverCanvas;
+          hubSaverCanvas = new lgfx::LGFX_Sprite(&hubDisplay);
+          bandHeight = h - 43;
+          hubSaverCanvasFullScreen = false;
+          if (hubSaverCanvas) {
+            hubSaverCanvas->setColorDepth(16);
+            spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
+            LOG_W("Full-screen saver buffer unavailable; using compact %dx%d scene", w, bandHeight);
+          }
+        }
         if (spriteBuffer) {
           hubSaverCanvasW = w;
           hubSaverCanvasH = bandHeight;
-          LOG_B("LovyanGFX saver sprite ready: %dx%d, %u bytes; free heap=%u",
-                w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap());
+          LOG_B("LovyanGFX saver sprite ready: %dx%d, %u bytes; free=%u largest=%u",
+                w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         } else {
           delete hubSaverCanvas;
           hubSaverCanvas = nullptr;
