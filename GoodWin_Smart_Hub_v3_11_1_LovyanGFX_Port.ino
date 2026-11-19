@@ -2753,6 +2753,15 @@ void startMatter() {
 static bool ensureHubMainCanvas() {
   const int16_t w = hubDisplay.width(), h = hubDisplay.height();
   if (w <= 0 || h <= 0) return false;
+  const size_t requiredBytes = (size_t)w * (size_t)h * sizeof(uint16_t);
+  // Keep a valid compact saver canvas instead of repeatedly attempting an
+  // impossible 40 KB allocation when the largest contiguous heap block is
+  // smaller. Render the main screen directly until memory can satisfy it.
+  if ((!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != h ||
+       !hubSaverCanvas->getBuffer()) && ESP.getMaxAllocHeap() < requiredBytes) {
+    hubRenderTarget = &hubDisplay;
+    return false;
+  }
   if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != h || !hubSaverCanvas->getBuffer()) {
     hubDisplay.waitDMA(); delete hubSaverCanvas; hubSaverCanvas = nullptr;
     hubSaverCanvasW = hubSaverCanvasH = 0;
@@ -4948,7 +4957,13 @@ void updateSmartHub() {
       drawSmartHub();
       return;
     }
-    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 13 || hubSaverId == 20 || hubSaverId == 22 || hubSaverId == 24 || hubSaverId == 25 || hubSaverId == 26 || hubSaverId == 27 || hubSaverId == 31) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS;
+    // Static information savers need no 25 FPS redraw. Rendering their
+    // gradient backdrop every 40 ms consumed UI time while their content
+    // changes only once per second.
+    const uint32_t saverInterval = (hubSaverId == 1 || hubSaverId == 7) ? 1000UL :
+      ((hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 13 || hubSaverId == 20 ||
+        hubSaverId == 22 || hubSaverId == 24 || hubSaverId == 25 || hubSaverId == 26 ||
+        hubSaverId == 27 || hubSaverId == 31) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS);
     if (now - hubSaverLastFrameAt >= saverInterval) {
       hubSaverLastFrameAt = now;
       drawHubScreenSaverFrame();
