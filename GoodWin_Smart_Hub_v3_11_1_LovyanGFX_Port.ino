@@ -257,7 +257,7 @@ uint32_t lastTftDrawAt = 0;
 uint8_t hubLayoutId = 0;
 uint8_t hubSaverId = 0;
 uint8_t hubOrientation = 0; // ST7735 rotation: 0..3 (portrait, landscape, inverted portrait, inverted landscape)
-static constexpr uint8_t HUB_SAVER_COUNT = 26;
+static constexpr uint8_t HUB_SAVER_COUNT = 32;
 static uint16_t hubSaverIdleSeconds = 60;
 static constexpr uint32_t HUB_SAVER_FRAME_MS = 40;
 static constexpr uint32_t HUB_SAVER_COMPLEX_FRAME_MS = 100;
@@ -276,6 +276,18 @@ static uint8_t saverMatrixTail[21];
 static uint8_t saverMatrixSeed[21];
 static int16_t saverWarpX[48], saverWarpY[48];
 static uint8_t saverWarpZ[48], saverWarpSpeed[48];
+static int16_t saverMystifyX[2][4], saverMystifyY[2][4];
+static int8_t saverMystifyVX[2][4], saverMystifyVY[2][4];
+static int16_t saverMystifyTrailX[2][12][4], saverMystifyTrailY[2][12][4];
+static uint8_t saverMystifyHead[2], saverMystifyCount[2];
+static int8_t saverPipePath[4][24][3], saverPipeDir[4][3];
+static uint8_t saverPipeHead[4], saverPipeCount[4], saverPipeTick[4];
+static uint8_t saverMazeWalls[8][8], saverMazeVisited[8][8];
+static uint8_t saverMazeStackX[64], saverMazeStackY[64];
+static uint8_t saverMazePlayerX, saverMazePlayerY, saverMazeDir, saverMazeMoveTick;
+static int16_t saverGlassX[20], saverGlassY[20];
+static uint8_t saverGlassSpeed[20], saverGlassRadius[20];
+static uint8_t saverFireHeat[40][64];
 static int16_t saverCloudX[2] = { -36, 44 };
 static uint8_t saverPulseRadius = 18;
 static int8_t saverPulseDirection = 1;
@@ -347,11 +359,12 @@ static const char *HUB_LAYOUT_NAMES[] = {
   "Погода тёмная", "Погода светлая", "Часы аналоговые", "Часы цифровые", "Инфо 1", "Инфо 2",
   "Инфо 3", "Инфо 4", "Пустой экран", "Тестовый"
 };
-static const char *HUB_SAVER_NAMES[26] = {
+static const char *HUB_SAVER_NAMES[32] = {
   "Нет", "Часы", "Плавающая точка", "Звёзды", "Дождь", "Снег", "Облака", "Температура",
   "Волна", "Пульс", "Северное сияние", "DNA · Double Helix", "Туманность", "Матрица",
   "Кометные следы", "Светлячки", "Радар", "Планетарные орбиты", "Эквалайзер", "Призматический тоннель",
-  "Фрактальный цветок", "Звёздный разгон", "Mystify · Win95", "Starfield · Win95", "3D Pipes · Win95", "3D Maze · Win95"
+  "Фрактальный цветок", "Звёздный разгон", "Mystify 95", "Starfield Simulation", "3D Pipes Classic", "3D Maze Classic",
+  "UE5 · Neon Rift", "Plasma Field", "Lava Lamp", "Vortex Tunnel", "Rain on Glass", "Pixel Fire"
 };
 
 // ---------- Device identity (set before Matter.begin) ----------
@@ -3915,12 +3928,13 @@ static void initHubScreenSaver() {
 
   // Shared frame chrome: the same title, divider and footer are used by every
   // saver. The animation canvas begins below the header and ends above footer.
-  static const char *SAVER_TITLES[26] = {
+  static const char *SAVER_TITLES[32] = {
     "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
     "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
     "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
-    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WIN95", "STARFIELD / WIN95",
-    "3D PIPES / WIN95", "3D MAZE / WIN95"
+    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WINDOWS 95", "STARFIELD SIMULATION",
+    "3D PIPES CLASSIC", "3D MAZE CLASSIC", "UE5 / NEON RIFT", "PLASMA FIELD", "LAVA LAMP",
+    "VORTEX TUNNEL", "RAIN ON GLASS", "PIXEL FIRE"
   };
   hubDisplay.setTextSize(1);
   hubDisplay.setTextColor(HUB_CYAN, HUB_BG);
@@ -3963,11 +3977,52 @@ static void initHubScreenSaver() {
     saverMatrixSeed[i] = random(0, 64);
   }
   for (uint8_t i = 0; i < 48; ++i) {
-    saverWarpX[i] = random(-70, 71);
-    saverWarpY[i] = random(-90, 91);
-    saverWarpZ[i] = random(18, 100);
-    saverWarpSpeed[i] = random(2, 6);
+    saverWarpX[i] = random(-70, 71); saverWarpY[i] = random(-90, 91);
+    saverWarpZ[i] = random(18, 100); saverWarpSpeed[i] = random(2, 6);
   }
+  for (uint8_t layer = 0; layer < 2; ++layer) {
+    saverMystifyHead[layer] = saverMystifyCount[layer] = 0;
+    for (uint8_t p = 0; p < 4; ++p) {
+      saverMystifyX[layer][p] = random(8, max(9, (int)w - 8));
+      saverMystifyY[layer][p] = random(8, max(9, (int)bandHeight - 8));
+      saverMystifyVX[layer][p] = random(0, 2) ? random(1, 4) : -random(1, 4);
+      saverMystifyVY[layer][p] = random(0, 2) ? random(1, 4) : -random(1, 4);
+    }
+  }
+  for (uint8_t p = 0; p < 4; ++p) {
+    saverPipeHead[p] = 0; saverPipeCount[p] = 1; saverPipeTick[p] = 0;
+    for (uint8_t axis = 0; axis < 3; ++axis) saverPipeDir[p][axis] = 0;
+    const uint8_t axis = random(0, 3); saverPipeDir[p][axis] = random(0, 2) ? 1 : -1;
+    for (uint8_t axis2 = 0; axis2 < 3; ++axis2) saverPipePath[p][0][axis2] = random(1, 6);
+  }
+  for (uint8_t y = 0; y < 8; ++y) for (uint8_t x = 0; x < 8; ++x) {
+    saverMazeWalls[y][x] = 0x0F; saverMazeVisited[y][x] = 0;
+  }
+  uint8_t stackTop = 0; saverMazeStackX[0] = 0; saverMazeStackY[0] = 0; saverMazeVisited[0][0] = 1;
+  static const int8_t mdx[4] = {0,1,0,-1}, mdy[4] = {-1,0,1,0};
+  static const uint8_t wallBit[4] = {1,2,4,8}, oppositeBit[4] = {4,8,1,2};
+  while (true) {
+    const uint8_t mx = saverMazeStackX[stackTop], my = saverMazeStackY[stackTop];
+    uint8_t order[4] = {0,1,2,3};
+    for (uint8_t i = 3; i > 0; --i) { const uint8_t j = random(0, i + 1); const uint8_t t = order[i]; order[i] = order[j]; order[j] = t; }
+    bool advanced = false;
+    for (uint8_t k = 0; k < 4; ++k) {
+      const uint8_t d = order[k]; const int8_t nx = (int8_t)mx + mdx[d], ny = (int8_t)my + mdy[d];
+      if (nx < 0 || nx >= 8 || ny < 0 || ny >= 8 || saverMazeVisited[(uint8_t)ny][(uint8_t)nx]) continue;
+      saverMazeWalls[my][mx] &= (uint8_t)~wallBit[d];
+      saverMazeWalls[(uint8_t)ny][(uint8_t)nx] &= (uint8_t)~oppositeBit[d];
+      saverMazeVisited[(uint8_t)ny][(uint8_t)nx] = 1;
+      ++stackTop; saverMazeStackX[stackTop] = (uint8_t)nx; saverMazeStackY[stackTop] = (uint8_t)ny;
+      advanced = true; break;
+    }
+    if (!advanced) { if (stackTop == 0) break; --stackTop; }
+  }
+  saverMazePlayerX = 0; saverMazePlayerY = 0; saverMazeDir = 1; saverMazeMoveTick = 0;
+  for (uint8_t i = 0; i < 20; ++i) {
+    saverGlassX[i] = random(5, max(6, (int)w - 5)); saverGlassY[i] = random(-bandHeight, bandHeight);
+    saverGlassSpeed[i] = random(1, 4); saverGlassRadius[i] = random(2, 5);
+  }
+  memset(saverFireHeat, 0, sizeof(saverFireHeat));
 }
 
 static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
