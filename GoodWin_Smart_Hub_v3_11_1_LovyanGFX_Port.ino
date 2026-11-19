@@ -113,15 +113,42 @@ void logPrintf(const char *tag, const char *fmt, ...) {
   pushWebLog(line);
 }
 
-int webEspLogVprintf(const char *format, va_list args) {
-  if (webLogEnabled) {
-    va_list copy;
-    va_copy(copy, args);
-    char line[WEB_LOG_LINE_SIZE];
-    vsnprintf(line, sizeof(line), format, copy);
-    va_end(copy);
-    pushWebLog(line);
+static bool goodwinRateLimitNoisyMatterLog(const char *line) {
+  if (!line) return false;
+  static const char *needles[] = {
+    "PacketBuffer: pool EMPTY",
+    "Failed to load subscription",
+    "has no access at all",
+    "UDP send failed"
+  };
+  static uint32_t lastForwardAt[4] = {0, 0, 0, 0};
+  static uint32_t suppressed[4] = {0, 0, 0, 0};
+  const uint32_t now = millis();
+  for (uint8_t i = 0; i < 4; ++i) {
+    if (!strstr(line, needles[i])) continue;
+    if (lastForwardAt[i] != 0 && (uint32_t)(now - lastForwardAt[i]) < 5000UL) {
+      ++suppressed[i];
+      return true;
+    }
+    lastForwardAt[i] = now;
+    suppressed[i] = 0;
+    return false;
   }
+  return false;
+}
+
+int webEspLogVprintf(const char *format, va_list args) {
+  char line[WEB_LOG_LINE_SIZE];
+  va_list copy;
+  va_copy(copy, args);
+  vsnprintf(line, sizeof(line), format, copy);
+  va_end(copy);
+
+  // Keep the first Matter resource/subscription error visible, but prevent a
+  // repeated SDK error storm from blocking the 115200-baud UART for seconds.
+  if (goodwinRateLimitNoisyMatterLog(line)) return 0;
+
+  if (webLogEnabled) pushWebLog(line);
   if (previousEspLogVprintf) return previousEspLogVprintf(format, args);
   return vprintf(format, args);
 }
@@ -4386,7 +4413,7 @@ static void drawHubScreenSaverFrame() {
           cv.fillCircle(x + 2, headY + 3, 2, 0x03E0);
           cv.drawPixel(x + 2, headY + 3, 0xFFFF);
         }
-        saverMatrixY[i] = (uint8_t)(headY + saverMatrixSpeed[i]);
+        saverMatrixY[i] = (uint16_t)(headY + saverMatrixSpeed[i]);
         if (saverMatrixY[i] > h + saverMatrixTail[i] * 8) {
           saverMatrixY[i] = random(0, 12);
           saverMatrixSpeed[i] = random(2, 6);
@@ -5064,7 +5091,7 @@ static bool weatherResolveHost(const char *host, IPAddress &resolved) {
     return false;
   }
   const uint32_t started = millis();
-  const int ok = WiFi.hostByName(host, resolved);
+  const int ok = WiFi.hostByName(host, resolved, 3000UL);
   const uint32_t elapsed = millis() - started;
   if (ok == 1) {
     LOG_B("Weather DNS %s -> %s (%lu ms, RSSI=%d dBm)",
@@ -5079,9 +5106,9 @@ static bool weatherResolveHost(const char *host, IPAddress &resolved) {
 
 static void configureWeatherHttp(WiFiClientSecure &client, HTTPClient &https, const char *agent) {
   client.setInsecure();                 // TLS encryption remains enabled; certificate verification is intentionally disabled.
-  client.setHandshakeTimeout(6);
-  client.setTimeout(7000);
-  https.setTimeout(7000);
+  client.setHandshakeTimeout(5);
+  client.setTimeout(5000);
+  https.setTimeout(5000);
   https.setReuse(false);
   https.setUserAgent(agent);
 }
@@ -5471,19 +5498,19 @@ void weatherTask(void *parameter){
       WeatherSnapshot snapshot;
       static const char *providerNames[3] = {"Open-Meteo","wttr.in","MET Norway"};
       if (mode == 0) {
-        // Rank providers by learned reliability and latency; skip active cooldowns.
-        uint8_t attempted = 0;
-        for (uint8_t attempt = 0; attempt < 3; ++attempt) {
-          const uint8_t id = hubAIChooseWeatherProvider(attempted);
-          if (id >= 3) break;
-          attempted |= (uint8_t)(1U << id);
+        // One provider per cycle: avoid chaining several TLS handshakes and
+        // large temporary allocations on the ESP32-WROOM shared heap.
+        const uint8_t id = hubAIChooseWeatherProvider(0);
+        if (id < 3) {
           setWeatherText("LOCAL AI", providerNames[id]);
           const uint32_t started = millis();
           const bool fetched = id == 0 ? fetchOpenMeteo(snapshot) : (id == 1 ? fetchWttr(snapshot) : fetchMetNo(snapshot));
-          const bool valid = fetched && applyWeatherSnapshot(snapshot, providerNames[id]);
-          hubAIRecordWeather(id, valid, millis() - started);
-          if (valid) { ok = true; break; }
-          LOG_W("LOCAL AI: %s failed validation; trying next learned candidate", providerNames[id]);
+          ok = fetched && applyWeatherSnapshot(snapshot, providerNames[id]);
+          hubAIRecordWeather(id, ok, millis() - started);
+          if (!ok) LOG_W("LOCAL AI: %s failed; another provider will be evaluated on the next cycle", providerNames[id]);
+        } else {
+          setWeatherText("Ожидание резервного источника", "LOCAL AI");
+          LOG_W("LOCAL AI: all weather providers are in cooldown");
         }
       } else {
         const uint8_t id = (uint8_t)(mode - 1);
@@ -5720,13 +5747,38 @@ void setup() {
   LOG_B("Initialization complete");
 }
 
+
+// Report long synchronous stages instead of guessing which subsystem stalls
+// the cooperative Arduino loop. This is diagnostic only; it does not change
+// task scheduling or disable any protocol.
+static void hubMeasureLoopStage(const char *stage, uint32_t startedUs) {
+  const uint32_t elapsedUs = micros() - startedUs;
+  if (elapsedUs < 100000UL) return;
+  static uint32_t lastReportAt = 0;
+  const uint32_t now = millis();
+  if (lastReportAt && (uint32_t)(now - lastReportAt) < 1000UL) return;
+  lastReportAt = now;
+  LOG_ERR("LOOP BLOCK stage=%s elapsed=%lu ms saver=%u WiFi=%u RSSI=%d MQTT=%u heap=%u largest=%u",
+          stage, (unsigned long)(elapsedUs / 1000UL), hubSaverId,
+          (unsigned)WiFi.status(), WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127,
+          mqttClient.connected() ? 1U : 0U, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+}
+
 void loop() {
   // Service HTTP both before and after the display update. A complete TFT scene
   // can take ~41 ms; the second poll prevents a request arriving during rendering
   // from waiting for the next loop iteration.
+  uint32_t stageStartedUs = micros();
   server.handleClient();
+  hubMeasureLoopStage("http-pre", stageStartedUs);
+
+  stageStartedUs = micros();
   updateSmartHub();
+  hubMeasureLoopStage("smart-hub-render/sensor", stageStartedUs);
+
+  stageStartedUs = micros();
   server.handleClient();
+  hubMeasureLoopStage("http-post", stageStartedUs);
   static uint32_t lastSerialHeartbeatAt=0;
   if((uint32_t)(millis()-lastSerialHeartbeatAt)>=30000UL){
     lastSerialHeartbeatAt=millis();
@@ -5768,10 +5820,21 @@ void loop() {
     if (portalMode) return;
   }
 
+  stageStartedUs = micros();
   processWiFiRecovery();
+  hubMeasureLoopStage("wifi-recovery", stageStartedUs);
+
+  stageStartedUs = micros();
   mqttLoop();
+  hubMeasureLoopStage("mqtt", stageStartedUs);
+
+  stageStartedUs = micros();
   updateEffects();
+  hubMeasureLoopStage("led-effects", stageStartedUs);
+
+  stageStartedUs = micros();
   saveStateIfNeeded();
+  hubMeasureLoopStage("nvs-save", stageStartedUs);
 
   // Event-driven status logging: print once at startup, then only on changes.
   static bool statusSnapshotValid = false;
@@ -5800,5 +5863,7 @@ void loop() {
       effects[statusEffect].name);
   }
 
+  stageStartedUs = micros();
   matterRestartIfNoFabric();
+  hubMeasureLoopStage("matter-recovery", stageStartedUs);
 }
