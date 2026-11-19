@@ -254,7 +254,7 @@ uint32_t lastTftDrawAt = 0;
 uint8_t hubLayoutId = 0;
 uint8_t hubSaverId = 0;
 uint8_t hubOrientation = 0; // ST7735 rotation: 0..3 (portrait, landscape, inverted portrait, inverted landscape)
-static constexpr uint8_t HUB_SAVER_COUNT = 22;
+static constexpr uint8_t HUB_SAVER_COUNT = 26;
 static uint16_t hubSaverIdleSeconds = 60;
 static constexpr uint32_t HUB_SAVER_FRAME_MS = 40;
 static constexpr uint32_t HUB_SAVER_COMPLEX_FRAME_MS = 100;
@@ -267,8 +267,12 @@ static uint8_t saverDotRadius = 5;
 static uint8_t saverStarX[18], saverStarY[18], saverStarPhase[18];
 static uint8_t saverRainX[10], saverRainY[10];
 static uint8_t saverSnowX[10], saverSnowY[10];
-static uint8_t saverMatrixY[16];
-static uint8_t saverMatrixSpeed[16];
+static uint8_t saverMatrixY[21];
+static uint8_t saverMatrixSpeed[21];
+static uint8_t saverMatrixTail[21];
+static uint8_t saverMatrixSeed[21];
+static int16_t saverWarpX[48], saverWarpY[48];
+static uint8_t saverWarpZ[48], saverWarpSpeed[48];
 static int16_t saverCloudX[2] = { -36, 44 };
 static uint8_t saverPulseRadius = 18;
 static int8_t saverPulseDirection = 1;
@@ -340,11 +344,11 @@ static const char *HUB_LAYOUT_NAMES[] = {
   "Погода тёмная", "Погода светлая", "Часы аналоговые", "Часы цифровые", "Инфо 1", "Инфо 2",
   "Инфо 3", "Инфо 4", "Пустой экран", "Тестовый"
 };
-static const char *HUB_SAVER_NAMES[22] = {
+static const char *HUB_SAVER_NAMES[26] = {
   "Нет", "Часы", "Плавающая точка", "Звёзды", "Дождь", "Снег", "Облака", "Температура",
   "Волна", "Пульс", "Северное сияние", "DNA · Double Helix", "Туманность", "Матрица",
   "Кометные следы", "Светлячки", "Радар", "Планетарные орбиты", "Эквалайзер", "Призматический тоннель",
-  "Фрактальный цветок", "Звёздный разгон"
+  "Фрактальный цветок", "Звёздный разгон", "Mystify · Win95", "Starfield · Win95", "3D Pipes · Win95", "3D Maze · Win95"
 };
 
 // ---------- Device identity (set before Matter.begin) ----------
@@ -2756,16 +2760,24 @@ static constexpr uint16_t HUB_RED      = 0xF986;
 static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t bg, uint16_t fg, uint8_t textSize, const char *value);
 
 void hubCard(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t fill, uint16_t edge=HUB_LINE) {
-  // Subtle two-pixel lift gives small cards depth without consuming their content area.
-  if (w > 6 && h > 6) hubTFT.fillRoundRect(x + 1, y + 2, w - 2, h - 2, 7, 0x0000);
-  hubTFT.fillRoundRect(x, y, w, h, 7, fill);
-  hubTFT.drawRoundRect(x, y, w, h, 7, edge);
-  if (w > 18) hubTFT.drawFastHLine(x + 8, y + 1, w - 16, fill == 0xFFFF ? 0xD6FB : 0x2149);
+  if (w <= 4 || h <= 4) return;
+  const int16_t radius = min((int16_t)7, min((int16_t)(w / 2), (int16_t)(h / 2)));
+  // Layered shadow, fine outer stroke and restrained specular edge create depth
+  // without gradients that would consume the small panel's RAM or blur text.
+  hubTFT.fillRoundRect(x + 1, y + 2, w - 2, h - 2, radius, 0x0000);
+  hubTFT.fillRoundRect(x, y, w, h, radius, fill);
+  hubTFT.drawRoundRect(x, y, w, h, radius, edge);
+  if (w > 18) hubTFT.drawFastHLine(x + 8, y + 1, w - 16, fill == 0xFFFF ? 0xD6FB : 0x2AEB);
+  if (h > 22 && w > 22) {
+    hubTFT.fillRoundRect(x + 2, y + 7, 2, h - 14, 1, edge);
+    hubTFT.drawFastHLine(x + 7, y + h - 2, w - 14, fill == 0xFFFF ? 0xE71C : 0x10A4);
+  }
 }
 void hubLabel(int16_t x, int16_t y, const char *s, uint16_t color=HUB_MUTED, uint16_t bg=HUB_PANEL) {
-  // Text background must match the card underneath; otherwise opaque glyph
-  // cells leave visible rectangular patches on the second card.
-  hubTFT.setTextSize(1); hubTFT.setTextColor(color, bg); hubTFT.setCursor(x,y); hubTFT.print(s);
+  // Labels are transparent: the already-rendered card remains the exact pixel
+  // background, so no opaque glyph cells can leave rectangular colour ghosts.
+  (void)bg;
+  hubTFT.setTextSize(1); hubTFT.setTextColor(color); hubTFT.setCursor(x,y); hubTFT.print(s);
 }
 void hubSunIcon(int16_t cx, int16_t cy, uint8_t r, uint16_t color) {
   hubTFT.fillCircle(cx,cy,r,color);
@@ -3549,7 +3561,10 @@ void drawSmartHub() {
 // Drawing helpers now write directly to hubTFT. Kept as a no-op so the
 // layout code stays readable without allocating or copying a framebuffer.
 void pushChangedTftFrame() {
-  // Intentionally empty: all pixels have already been sent to the ST7735.
+  // Main screens use direct LovyanGFX primitives plus small RGB565 value sprites.
+  // Wait at the frame boundary so no asynchronous SPI/DMA work can overlap the
+  // next layout, telemetry patch, or screen-saver transition.
+  hubTFT.waitDMA();
 }
 
 // Legacy frame counter intentionally disabled. The display is event-driven,
@@ -3857,11 +3872,12 @@ static void initHubScreenSaver() {
 
   // Shared frame chrome: the same title, divider and footer are used by every
   // saver. The animation canvas begins below the header and ends above footer.
-  static const char *SAVER_TITLES[22] = {
+  static const char *SAVER_TITLES[26] = {
     "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
     "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
     "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
-    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP"
+    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WIN95", "STARFIELD / WIN95",
+    "3D PIPES / WIN95", "3D MAZE / WIN95"
   };
   hubTFT.setTextSize(1);
   hubTFT.setTextColor(HUB_CYAN, HUB_BG);
@@ -3897,15 +3913,30 @@ static void initHubScreenSaver() {
     saverSnowX[i] = (uint8_t)random(3, max(4, (int)w - 3));
     saverSnowY[i] = (uint8_t)random(2, max(3, (int)bandHeight - 2));
   }
-  for (uint8_t i = 0; i < 16; ++i) {
+  for (uint8_t i = 0; i < 21; ++i) {
     saverMatrixY[i] = random(0, max(1, (int)bandHeight));
-    saverMatrixSpeed[i] = random(1, 4);
+    saverMatrixSpeed[i] = random(2, 5);
+    saverMatrixTail[i] = random(5, 12);
+    saverMatrixSeed[i] = random(0, 64);
+  }
+  for (uint8_t i = 0; i < 48; ++i) {
+    saverWarpX[i] = random(-70, 71);
+    saverWarpY[i] = random(-90, 91);
+    saverWarpZ[i] = random(18, 100);
+    saverWarpSpeed[i] = random(2, 6);
   }
 }
 
 static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
-  // LovyanGFX native radial gradient: a quiet midnight base with a soft
-  // atmospheric blue lift. No graph-paper grid or high-contrast decoration.
+  // Distinct scene palettes: cinematic Matrix/Windows starfield are near-black;
+  // the premium GoodWin family keeps its restrained midnight-blue atmosphere.
+  if (hubSaverId == 13 || hubSaverId == 21 || hubSaverId == 23) {
+    cv.fillScreen(0x0000);
+    if (hubSaverId == 13) {
+      for (int16_t x = 5; x < w; x += 12) cv.drawFastVLine(x, 0, h, 0x0100);
+    }
+    return;
+  }
   cv.fillGradientRect(0, 0, w, h, 0x10A5, 0x0208);
   cv.drawFastHLine(8, 3, w - 16, 0x19A7);
   cv.drawFastHLine(8, h - 4, w - 16, 0x10A4);
@@ -4156,23 +4187,33 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
-    case 13: { // Matrix Rain: falling glyph columns.
+    case 13: { // Cinematic Matrix rain: dense independent streams, bright heads and fading glyph tails.
+      static const char matrixGlyphs[] = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ#$%&*+-<>/\\[]{}";
+      const uint8_t glyphCount = sizeof(matrixGlyphs) - 1;
+      const uint32_t frame = now / 90U;
       cv.setTextSize(1);
-      for (uint8_t i = 0; i < 16; ++i) {
-        const int16_t x = 4 + i * (w - 8) / 16;
-        const int16_t y = saverMatrixY[i];
-        cv.setTextColor(0x07E0);
-        cv.setCursor(x, y);
-        cv.write((uint8_t)('0' + ((i * 7U + now / 83U) % 10U)));
-        if (y > 7) {
-          cv.setTextColor(0xAFE0);
-          cv.setCursor(x, y - 8);
-          cv.write((uint8_t)('A' + ((i * 3U + now / 137U) % 26U)));
+      for (uint8_t i = 0; i < 21; ++i) {
+        const int16_t x = 2 + i * 6;
+        const int16_t headY = saverMatrixY[i];
+        for (uint8_t k = 0; k < saverMatrixTail[i]; ++k) {
+          const int16_t gy = headY - (int16_t)k * 8;
+          if (gy < -7 || gy >= h) continue;
+          const uint8_t gi = (uint8_t)((saverMatrixSeed[i] + i * 13U + frame * 3U + k * 7U) % glyphCount);
+          const uint16_t ink = (k == 0) ? 0xFFFF : (k == 1) ? 0xBFFF : (k < 4) ? 0x07E0 : (k < 7) ? 0x03A0 : 0x0220;
+          cv.setTextColor(ink);
+          cv.setCursor(x, gy);
+          cv.write((uint8_t)matrixGlyphs[gi]);
         }
-        saverMatrixY[i] = (uint8_t)(y + saverMatrixSpeed[i]);
-        if (saverMatrixY[i] > h + 8) {
-          saverMatrixY[i] = random(0, 18);
-          saverMatrixSpeed[i] = random(1, 4);
+        if (headY >= 0 && headY < h) {
+          cv.fillCircle(x + 2, headY + 3, 2, 0x03E0);
+          cv.drawPixel(x + 2, headY + 3, 0xFFFF);
+        }
+        saverMatrixY[i] = (uint8_t)(headY + saverMatrixSpeed[i]);
+        if (saverMatrixY[i] > h + saverMatrixTail[i] * 8) {
+          saverMatrixY[i] = random(0, 12);
+          saverMatrixSpeed[i] = random(2, 6);
+          saverMatrixTail[i] = random(6, 13);
+          saverMatrixSeed[i] = random(0, 64);
         }
       }
       break;
@@ -4297,21 +4338,112 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
-    case 21: { // Star Warp: depth-scaled stars rushing from the centre.
+    case 21: { // Star Warp: real perspective projection with persistent 3D star depth.
       const int16_t cx = w / 2, cy = h / 2;
-      for (uint8_t i = 0; i < 34; ++i) {
-        const float seed = i * 2.399963f;
-        const float z = fmodf((i * 17.0f + now * 0.075f), 100.0f) + 1.0f;
-        const float scale = 1.0f + z / 22.0f;
-        const int16_t x = cx + (int16_t)(cosf(seed) * scale * (w * 0.42f));
-        const int16_t y = cy + (int16_t)(sinf(seed) * scale * (h * 0.42f));
-        if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
-          const int16_t tail = max(1, (int)(scale * 2.0f));
-          cv.drawLine(cx + (x - cx) * 2 / 3, cy + (y - cy) * 2 / 3, x, y,
-                      z > 65.0f ? HUB_WHITE : (z > 30.0f ? HUB_CYAN : 0x2149));
-          if (tail > 2) cv.drawPixel(x, y, HUB_WHITE);
+      const int16_t focal = 48;
+      for (uint8_t i = 0; i < 48; ++i) {
+        const int16_t z = saverWarpZ[i];
+        const int16_t oldZ = z + saverWarpSpeed[i] * 4;
+        const int16_t x = cx + (int32_t)saverWarpX[i] * focal / max((int16_t)1, z);
+        const int16_t y = cy + (int32_t)saverWarpY[i] * focal / max((int16_t)1, z);
+        const int16_t ox = cx + (int32_t)saverWarpX[i] * focal / oldZ;
+        const int16_t oy = cy + (int32_t)saverWarpY[i] * focal / oldZ;
+        if (x >= 0 && x < w && y >= 0 && y < h) {
+          const uint16_t trail = z < 24 ? HUB_WHITE : (z < 55 ? HUB_CYAN : 0x3A0D);
+          cv.drawLine(ox, oy, x, y, trail);
+          cv.fillCircle(x, y, z < 22 ? 2 : 1, z < 32 ? HUB_WHITE : HUB_CYAN);
+        }
+        saverWarpZ[i] = (uint8_t)(z > saverWarpSpeed[i] ? z - saverWarpSpeed[i] : 0);
+        if (saverWarpZ[i] < 8 || x < -8 || x > w + 8 || y < -8 || y > h + 8) {
+          saverWarpX[i] = random(-70, 71);
+          saverWarpY[i] = random(-90, 91);
+          saverWarpZ[i] = random(78, 110);
+          saverWarpSpeed[i] = random(2, 6);
         }
       }
+      break;
+    }
+
+    case 22: { // Windows 95 Mystify: interlaced neon polygons with long moving edges.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t layer = 0; layer < 2; ++layer) {
+        int16_t px[4], py[4];
+        const float drift = phase * (layer ? -0.37f : 0.51f) + layer * 1.4f;
+        for (uint8_t p = 0; p < 4; ++p) {
+          const float a = drift + p * 1.570796f;
+          const float rx = 28.0f + 13.0f * sinf(phase * 0.73f + p * 1.7f + layer);
+          const float ry = 35.0f + 13.0f * cosf(phase * 0.61f + p * 1.3f + layer);
+          px[p] = cx + (int16_t)(cosf(a) * rx);
+          py[p] = cy + (int16_t)(sinf(a * 1.11f) * ry);
+        }
+        const uint16_t glow = layer ? 0x481F : 0x03EF;
+        const uint16_t neon = layer ? 0xF81F : 0x07FF;
+        for (uint8_t p = 0; p < 4; ++p) {
+          const uint8_t n = (p + 1) & 3;
+          cv.drawWideLine(px[p], py[p], px[n], py[n], 3.0f, glow);
+          cv.drawWideLine(px[p], py[p], px[n], py[n], 1.0f, neon);
+          cv.fillCircle(px[p], py[p], 2, HUB_WHITE);
+        }
+      }
+      break;
+    }
+
+    case 23: { // Windows 95 Starfield: stars accelerate from a central vanishing point.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 48; ++i) {
+        const int16_t z = saverWarpZ[i];
+        const int16_t oldZ = z + saverWarpSpeed[i] * 2;
+        const int16_t x = cx + (int32_t)saverWarpX[i] * 34 / max((int16_t)1, z);
+        const int16_t y = cy + (int32_t)saverWarpY[i] * 34 / max((int16_t)1, z);
+        const int16_t ox = cx + (int32_t)saverWarpX[i] * 34 / oldZ;
+        const int16_t oy = cy + (int32_t)saverWarpY[i] * 34 / oldZ;
+        if (x >= 0 && x < w && y >= 0 && y < h) {
+          cv.drawLine(ox, oy, x, y, z < 28 ? HUB_WHITE : 0xC618);
+          cv.drawPixel(x, y, HUB_WHITE);
+        }
+        saverWarpZ[i] = (uint8_t)(z > saverWarpSpeed[i] ? z - saverWarpSpeed[i] : 0);
+        if (saverWarpZ[i] < 8 || x < -4 || x > w + 4 || y < -4 || y > h + 4) {
+          saverWarpX[i] = random(-70, 71); saverWarpY[i] = random(-90, 91);
+          saverWarpZ[i] = random(78, 110); saverWarpSpeed[i] = random(1, 4);
+        }
+      }
+      break;
+    }
+
+    case 24: { // Windows 95 3D Pipes: luminous tubular paths with joints and highlights.
+      const int16_t cx = w / 2, cy = h / 2;
+      const uint16_t tube[4] = { 0x03EF, 0x7DFF, 0xF81F, 0xFEA0 };
+      for (uint8_t p = 0; p < 4; ++p) {
+        int16_t lastX = cx, lastY = cy;
+        for (uint8_t k = 0; k < 18; ++k) {
+          const float t = phase * (0.42f + p * 0.07f) + k * 0.31f + p * 1.57f;
+          const int16_t x = cx + (int16_t)(sinf(t * (0.73f + p * 0.06f)) * (18.0f + k * 1.65f));
+          const int16_t y = cy + (int16_t)(cosf(t * 0.91f + p) * (12.0f + k * 1.45f));
+          if (k) {
+            cv.drawWideLine(lastX + 1, lastY + 2, x + 1, y + 2, 4.0f, 0x1082);
+            cv.drawWideLine(lastX, lastY, x, y, 2.6f, tube[p]);
+            cv.drawLine(lastX, lastY - 1, x, y - 1, 0xFFFF);
+          }
+          if ((k % 5) == 0) cv.fillCircle(x, y, 3, tube[p]);
+          lastX = x; lastY = y;
+        }
+      }
+      break;
+    }
+
+    case 25: { // Windows 95 3D Maze: a moving first-person corridor perspective.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 8; ++i) {
+        const uint8_t depth = (uint8_t)((now / 42U + i * 13U) % 100U);
+        const int16_t ww = 8 + depth * (w - 16) / 100;
+        const int16_t hh = 7 + depth * (h - 14) / 100;
+        const int16_t shift = (int16_t)(sinf(phase * 0.7f + i * 1.1f) * (depth * 0.12f));
+        const uint16_t wall = (i & 1) ? 0x3A0D : 0x2149;
+        cv.drawRect(cx - ww / 2 + shift, cy - hh / 2, ww, hh, wall);
+        cv.drawLine(cx - ww / 2 + shift, cy - hh / 2, cx - ww / 3, cy - hh / 3, 0x5DDF);
+        cv.drawLine(cx + ww / 2 + shift, cy - hh / 2, cx + ww / 3, cy - hh / 3, 0x5DDF);
+      }
+      cv.fillCircle(cx, cy, 2, HUB_CYAN);
       break;
     }
 
@@ -4442,7 +4574,7 @@ void updateSmartHub() {
       drawSmartHub();
       return;
     }
-    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 20) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS;
+    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 13 || hubSaverId == 20 || hubSaverId == 24 || hubSaverId == 25) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS;
     if (now - hubSaverLastFrameAt >= saverInterval) {
       hubSaverLastFrameAt = now;
       drawHubScreenSaverFrame();
