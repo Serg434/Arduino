@@ -4381,6 +4381,22 @@ void updateSmartHub() {
     hubForceFullRedraw = true;
   }
 
+  // Extended status pages also follow Matter commissioning and MQTT link state.
+  static bool lastUiMatter = false, lastUiFabric = false, lastUiMqtt = false;
+  const bool uiMatter = matterStarted;
+  const bool uiFabric = Matter.isDeviceCommissioned();
+  const bool uiMqtt = mqttClient.connected();
+  if (uiMatter != lastUiMatter || uiFabric != lastUiFabric || uiMqtt != lastUiMqtt) {
+    lastUiMatter = uiMatter; lastUiFabric = uiFabric; lastUiMqtt = uiMqtt;
+    if (hubLayoutId >= 14 && hubLayoutId < HUB_LAYOUT_COUNT) hubSensorDirty = true;
+  }
+  static int lastUiRssi = -128;
+  const int uiRssi = wifiConnected ? WiFi.RSSI() : -127;
+  if (abs(uiRssi - lastUiRssi) >= 5) {
+    lastUiRssi = uiRssi;
+    if (hubLayoutId == 23 || hubLayoutId == 37 || hubLayoutId == 41) hubSensorDirty = true;
+  }
+
   if (!hubDisplayEnabled) {
     hubSaverActive = false;
   } else if (hubSaverId > 0 && hubSaverIdleSeconds > 0 && !hubSaverActive && (uint32_t)(now - hubLastActivityAt) >= (uint32_t)hubSaverIdleSeconds * 1000UL) {
