@@ -2724,7 +2724,7 @@ void updateHubClock() {
   }
 }
 
-// ---------- TFT visual primitives (ST7735 / Adafruit_GFX) ----------
+// ---------- TFT visual primitives (LovyanGFX / ST7735S) ----------
 static constexpr uint16_t HUB_BG       = 0x0862; // deep blue-black
 static constexpr uint16_t HUB_PANEL    = 0x10A4;
 static constexpr uint16_t HUB_PANEL2   = 0x1928;
@@ -4112,14 +4112,14 @@ static void drawHubScreenSaverFrame() {
         const uint16_t ca = depth > 0.0f ? HUB_CYAN : 0x05BF;
         const uint16_t cb = depth > 0.0f ? 0xF81F : HUB_CYAN;
         if (y > 7) {
-          cv.drawLine(prevAx, prevAy, ax, y, ca);
-          cv.drawLine(prevBx, prevBy, bx, y, cb);
+          cv.drawWideLine(prevAx, prevAy, ax, y, 1.25f, ca);
+          cv.drawWideLine(prevBx, prevBy, bx, y, 1.25f, cb);
         }
         if ((y % 12) < 2) {
           cv.drawLine(ax, y, bx, y, 0x7BEF);
           const uint8_t r = depth > 0.55f ? 3 : 2;
-          cv.fillCircle(ax, y, r, ca);
-          cv.fillCircle(bx, y, r, cb);
+          cv.fillSmoothCircle(ax, y, r, ca);
+          cv.fillSmoothCircle(bx, y, r, cb);
           cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
           cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
         }
@@ -4141,15 +4141,10 @@ static void drawHubScreenSaverFrame() {
         const float a = phase * (0.22f + ring * 0.07f) + ring * 1.35f;
         const int16_t rx = 15 + ring * 11;
         const int16_t ry = 9 + ring * 7;
-        int16_t px = cx + (int16_t)(cosf(a) * rx);
-        int16_t py = cy + (int16_t)(sinf(a) * ry);
-        for (uint8_t k = 1; k <= 18; ++k) {
-          const float q = a + k * 0.16f;
-          const int16_t x = cx + (int16_t)(cosf(q) * rx);
-          const int16_t y = cy + (int16_t)(sinf(q) * ry);
-          if ((k + ring) % 3 == 0) cv.drawPixel(x, y, ring & 1 ? 0xB01F : HUB_CYAN);
-          px = x; py = y;
-        }
+        cv.drawEllipse(cx, cy, rx, ry, ring & 1 ? 0x3A0D : 0x2149);
+        const int16_t x = cx + (int16_t)(cosf(a) * rx);
+        const int16_t y = cy + (int16_t)(sinf(a) * ry);
+        cv.fillSmoothCircle(x, y, 2, ring & 1 ? 0xB01F : HUB_CYAN);
       }
       for (uint8_t i = 0; i < 7; ++i) {
         const float a = phase * (0.3f + i * 0.025f) + i * 0.897f;
@@ -4187,13 +4182,10 @@ static void drawHubScreenSaverFrame() {
         const float p = fmodf(phase * (0.48f + i * 0.13f) + i * 0.37f, 1.0f);
         const int16_t x = (int16_t)(p * (w + 50)) - 25;
         const int16_t y = h / 4 + i * (h / 4) + (int16_t)(sinf(phase + i) * 7.0f);
-        for (uint8_t t = 1; t <= 7; ++t) {
-          const int16_t tx = x - t * 4;
-          const int16_t ty = y - t;
-          cv.drawLine(tx, ty, tx + 3, ty + 1, t < 3 ? HUB_CYAN : (t < 5 ? 0x3D7A : 0x2149));
-        }
-        cv.fillCircle(x, y, 3, HUB_WHITE);
-        cv.fillCircle(x - 2, y, 2, HUB_CYAN);
+        cv.drawWideLine(x - 28, y - 7, x, y, 3.0f, 0x2149);
+        cv.drawWideLine(x - 20, y - 5, x, y, 1.7f, HUB_CYAN);
+        cv.fillSmoothCircle(x, y, 3, HUB_WHITE);
+        cv.fillSmoothCircle(x - 2, y, 2, HUB_CYAN);
       }
       break;
     }
@@ -4204,8 +4196,8 @@ static void drawHubScreenSaverFrame() {
         const int16_t x = w / 2 + (int16_t)(sinf(p * 1.13f) * (18 + (i % 3) * 12));
         const int16_t y = h / 2 + (int16_t)(cosf(p * 0.83f) * (12 + (i % 4) * 8));
         const uint16_t c = (i % 3 == 0) ? HUB_YELLOW : (i % 3 == 1 ? 0xBFE0 : HUB_CYAN);
-        cv.drawCircle(x, y, 5 + (int16_t)((sinf(p * 2.0f) + 1.0f) * 2.0f), 0x2149);
-        cv.fillCircle(x, y, 2, c);
+        cv.drawSpot(x, y, 5.0f + (sinf(p * 2.0f) + 1.0f) * 2.0f, 0x2149);
+        cv.fillSmoothCircle(x, y, 2, c);
         cv.drawPixel(x - 1, y - 1, HUB_WHITE);
       }
       break;
@@ -4227,8 +4219,9 @@ static void drawHubScreenSaverFrame() {
       const float a = fmodf(phase * 0.72f, 6.283185f);
       const int16_t sx = cx + (int16_t)(cosf(a) * r);
       const int16_t sy = cy + (int16_t)(sinf(a) * r);
+      cv.drawArc(cx, cy, r, r - 3, a - 0.48f, a, 0x3A0D);
       cv.drawLine(cx, cy, sx, sy, HUB_CYAN);
-      cv.drawLine(cx, cy, cx + (int16_t)(cosf(a - 0.35f) * r), cy + (int16_t)(sinf(a - 0.35f) * r), 0x2149);
+      cv.drawWideLine(cx, cy, cx + (int16_t)(cosf(a) * r), cy + (int16_t)(sinf(a) * r), 1.1f, HUB_CYAN);
       for (uint8_t i = 0; i < 4; ++i) {
         const int16_t px = cx + (int16_t)(cosf(i * 1.71f + 0.5f) * (8 + i * 8));
         const int16_t py = cy + (int16_t)(sinf(i * 1.71f + 0.5f) * (8 + i * 8));
@@ -4244,7 +4237,7 @@ static void drawHubScreenSaverFrame() {
       for (uint8_t i = 0; i < 4; ++i) {
         const int16_t rx = 18 + i * 11;
         const int16_t ry = 9 + i * 6;
-        cv.drawCircle(cx, cy, rx, 0x2149);
+        cv.drawEllipse(cx, cy, rx, ry, 0x2149);
         const float a = phase * (0.36f + i * 0.11f) + i * 1.2f;
         const int16_t px = cx + (int16_t)(cosf(a) * rx);
         const int16_t py = cy + (int16_t)(sinf(a) * ry);
@@ -4290,9 +4283,12 @@ static void drawHubScreenSaverFrame() {
         const float a = phase * 0.42f + i * 0.523599f;
         const int16_t x = cx + (int16_t)(cosf(a) * 25.0f);
         const int16_t y = cy + (int16_t)(sinf(a) * 25.0f);
-        cv.drawLine(cx, cy, x, y, 0x2149);
+        const int16_t cpx = cx + (int16_t)(cosf(a + 0.35f) * 40.0f);
+        const int16_t cpy = cy + (int16_t)(sinf(a + 0.35f) * 40.0f);
+        cv.drawBezier(cx, cy, cpx, cpy, x, y, i & 1 ? HUB_CYAN : 0xF81F);
+        cv.drawBezier(x, y, cpx, cpy, cx, cy, i & 1 ? 0x7DFF : 0xB01F);
         cv.drawCircle(x, y, 5, i & 1 ? HUB_CYAN : 0xF81F);
-        cv.fillCircle(x, y, 2, i & 1 ? 0x7DFF : HUB_WHITE);
+        cv.fillSmoothCircle(x, y, 2, i & 1 ? 0x7DFF : HUB_WHITE);
       }
       cv.drawCircle(cx, cy, 13 + (int16_t)((sinf(phase) + 1.0f) * 5.0f), HUB_YELLOW);
       cv.fillCircle(cx, cy, 4, HUB_WHITE);
