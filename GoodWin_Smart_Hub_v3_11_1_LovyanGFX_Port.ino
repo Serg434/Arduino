@@ -3889,7 +3889,7 @@ static void initHubScreenSaver() {
 static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
   // LovyanGFX native radial gradient: a quiet midnight base with a soft
   // atmospheric blue lift. No graph-paper grid or high-contrast decoration.
-  cv.fillGradientRect(0, 0, w, h, 0x0208, 0x10A5);
+  cv.fillGradientRect(0, 0, w, h, 0x10A5, 0x0208);
   cv.drawFastHLine(8, 3, w - 16, 0x19A7);
   cv.drawFastHLine(8, h - 4, w - 16, 0x10A4);
   cv.drawPixel(8, 8, 0x3A0D);
