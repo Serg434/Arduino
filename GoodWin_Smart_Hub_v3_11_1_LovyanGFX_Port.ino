@@ -271,7 +271,7 @@ static uint8_t saverDotRadius = 5;
 static uint8_t saverStarX[18], saverStarY[18], saverStarPhase[18];
 static uint8_t saverRainX[10], saverRainY[10];
 static uint8_t saverSnowX[10], saverSnowY[10];
-static uint8_t saverMatrixY[21];
+static uint16_t saverMatrixY[21];
 static uint8_t saverMatrixSpeed[21];
 static uint8_t saverMatrixTail[21];
 static uint8_t saverMatrixSeed[21];
@@ -4593,6 +4593,15 @@ static void drawHubScreenSaverFrame() {
             cv.drawWideLine(prevX + 2, prevY + 3, sx + 2, sy + 3, 5.0f, 0x1082);
             cv.drawWideLine(prevX, prevY, sx, sy, 3.0f, tube[p]);
             cv.drawLine(prevX - 1, prevY - 1, sx - 1, sy - 1, 0xFFFF);
+            if (n + 1 < saverPipeCount[p]) {
+              const uint8_t older = (uint8_t)((saverPipeHead[p] + 24 - n - 1) % 24);
+              const int16_t ox = saverPipePath[p][older][0], oy = saverPipePath[p][older][1], oz = saverPipePath[p][older][2];
+              const int16_t vx1 = gx - ox, vy1 = gy - oy, vz1 = gz - oz;
+              const int16_t vx2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][0] - gx;
+              const int16_t vy2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][1] - gy;
+              const int16_t vz2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][2] - gz;
+              if (vx1 * vx2 + vy1 * vy2 + vz1 * vz2 != -1) cv.fillSmoothCircle(sx, sy, 4, tube[p]);
+            }
           }
           cv.fillCircle(sx, sy, 2, tube[p]);
           prevX = sx; prevY = sy;
@@ -4654,6 +4663,16 @@ static void drawHubScreenSaverFrame() {
       }
       cv.drawFastHLine(4, h - 5, w - 8, 0x39E7);
       cv.fillCircle(cx, h / 2, 1, HUB_WHITE);
+      // Tiny moving rat silhouette, a recognizable detail from the original 3D Maze.
+      {
+        const int16_t rx = cx + (int16_t)(sinf(now * 0.0021f) * 11.0f);
+        const int16_t ry = h - 17 + (int16_t)(sinf(now * 0.004f) * 2.0f);
+        cv.fillEllipse(rx, ry, 5, 3, 0xC618);
+        cv.fillCircle(rx + 4, ry - 2, 2, 0xE71C);
+        cv.fillCircle(rx + 3, ry - 4, 1, 0xFFFF);
+        cv.drawLine(rx - 4, ry + 1, rx - 8, ry + 3, 0xC618);
+        cv.drawPixel(rx + 5, ry - 2, 0x0000);
+      }
       break;
     }
 
