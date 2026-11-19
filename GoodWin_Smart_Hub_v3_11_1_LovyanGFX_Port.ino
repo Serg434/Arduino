@@ -60,7 +60,7 @@ static const char *goodwinFlashModeName(FlashMode_t mode) {
 }
 
 // ============================================================
-// GoodWin Smart Hub v3.11.1-dev LovyanGFX port | DMA partial UI + buffered screensavers + resilient weather
+// GoodWin Smart Hub v3.11.2-dev LovyanGFX port | DMA partial UI + buffered screensavers + resilient weather
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
 // Climate endpoint advertises the standard Temperature Sensor device type and exposes
 // Relative Humidity Measurement as an additional server cluster on the same endpoint.
@@ -1079,7 +1079,7 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 </style>
 </head>
 <body><div class="app">
-<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.1 DEV</div></div></div><div class="header-tools"><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
+<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.2 DEV</div></div></div><div class="header-tools"><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
 <div class="grid-main">
 <section class="card hero"><div class="eyebrow">Освещение · ESP32</div><div class="hero-icon" id="heroIcon">💡</div><h1 id="lightState">Загрузка...</h1><div class="hero-description" id="lightDescription">Подключение к устройству</div><div class="dimmer"><div class="dimmer-head"><span>ЯРКОСТЬ</span><strong class="dimmer-value" id="brightnessValue">80%</strong></div><input id="brightnessSlider" type="range" min="1" max="100" value="80" step="1" aria-label="Яркость светодиода"><div class="dimmer-foot"><span>МИНИМУМ</span><span>ПЛАВНОЕ PWM-УПРАВЛЕНИЕ</span><span>100%</span></div></div><div class="dimmer"><div class="dimmer-head"><span>СКОРОСТЬ ЭФФЕКТОВ</span><strong class="dimmer-value" id="speedValue">100%</strong></div><input id="speedSlider" type="range" min="25" max="300" value="100" step="5" aria-label="Скорость эффектов"><div class="dimmer-foot"><span>МЕДЛЕННО</span><span>ТЕМП АНИМАЦИИ</span><span>БЫСТРО</span></div></div><div class="power-actions"><button class="btn btn-primary" onclick="setPower(true)">Включить</button><button class="btn" onclick="setPower(false)">Выключить</button></div></section>
 <section class="card side-status"><div class="section-head"><h2>Устройство</h2><span>LIVE STATUS</span></div><div class="status-item"><div class="status-label">Wi-Fi</div><div class="status-value" id="wifiStatus">—</div></div><div class="status-item"><div class="status-label">IP-адрес</div><div class="status-value" id="ipStatus">—</div></div><div class="status-item"><div class="status-label">Matter</div><div class="status-value" id="matterStatus">—</div></div><div class="status-item"><div class="status-label">Сопряжение</div><div class="status-value" id="commissionStatus">—</div></div></section>
@@ -4747,7 +4747,7 @@ static bool fetchOpenMeteo(WeatherSnapshot &v) {
 
   WiFiClientSecure client;
   HTTPClient https;
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (+https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (+https://github.com/Serg434/Arduino)");
   String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(WEATHER_LAT, 6) +
     "&longitude=" + String(WEATHER_LON, 6) +
     "&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,uv_index,precipitation,weather_code" +
@@ -4833,7 +4833,7 @@ static bool fetchWttr(WeatherSnapshot &v) {
 
   WiFiClientSecure client;
   HTTPClient https;
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (+https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (+https://github.com/Serg434/Arduino)");
   String url = "https://wttr.in/" + String(WEATHER_LAT, 4) + "," + String(WEATHER_LON, 4) + "?format=j1";
   if (!https.begin(client, url)) {
     LOG_ERR("wttr.in HTTPS begin failed");
@@ -4897,7 +4897,7 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   WiFiClientSecure client;
   HTTPClient https;
   // MET Norway requires a unique identifying User-Agent. The project URL is the identifier.
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.1 (https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (https://github.com/Serg434/Arduino)");
   const char *responseHeaders[] = { "X-ErrorClass" };
   https.collectHeaders(responseHeaders, 1);
   String url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
@@ -5119,7 +5119,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("[BOOT] GoodWin Smart Hub v3.11.1-dev - Serial console ready @115200");
+  Serial.println("[BOOT] GoodWin Smart Hub v3.11.2-dev - Serial console ready @115200");
   Serial.flush();
   previousEspLogVprintf = esp_log_set_vprintf(webEspLogVprintf);
   LOG_B("GoodWin Smart Hub booting");
