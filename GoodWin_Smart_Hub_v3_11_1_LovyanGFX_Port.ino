@@ -2739,8 +2739,11 @@ static constexpr uint16_t HUB_RED      = 0xF986;
 static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t bg, uint16_t fg, uint8_t textSize, const char *value);
 
 void hubCard(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t fill, uint16_t edge=HUB_LINE) {
+  // Subtle two-pixel lift gives small cards depth without consuming their content area.
+  if (w > 6 && h > 6) hubTFT.fillRoundRect(x + 1, y + 2, w - 2, h - 2, 7, 0x0000);
   hubTFT.fillRoundRect(x, y, w, h, 7, fill);
   hubTFT.drawRoundRect(x, y, w, h, 7, edge);
+  if (w > 18) hubTFT.drawFastHLine(x + 8, y + 1, w - 16, fill == 0xFFFF ? 0xD6FB : 0x2149);
 }
 void hubLabel(int16_t x, int16_t y, const char *s, uint16_t color=HUB_MUTED) {
   hubTFT.setTextSize(1); hubTFT.setTextColor(color, HUB_PANEL); hubTFT.setCursor(x,y); hubTFT.print(s);
@@ -2816,14 +2819,15 @@ void hubProgress(int16_t x,int16_t y,int16_t w,int16_t h,uint8_t value,uint16_t 
   oldX=x;oldY=y;oldW=w;oldH=h;oldInner=inner;
 }
 void hubHeader(int16_t w,const char *section){
-  // drawSmartHub() clears the background only when the layout/orientation changes.
+  // Shared premium chrome: accent rail, compact wordmark and live network glyph.
   hubTFT.setTextWrap(false);
-  hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_BG);hubTFT.setCursor(5,5);hubTFT.print("GOODWIN");
-  hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(55,5);hubTFT.print(section);
-  // Compact connectivity glyph: three radio arcs and a status dot.
-  int16_t x=w-13; hubTFT.drawPixel(x-4,8,HUB_GREEN);hubTFT.drawLine(x-6,6,x-2,6,HUB_GREEN);hubTFT.drawLine(x-8,4,x,4,HUB_GREEN);
+  hubTFT.fillRect(5,4,2,10,HUB_CYAN);
+  hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_CYAN,HUB_BG);hubTFT.setCursor(10,5);hubTFT.print("GOODWIN");
+  hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(57,5);hubTFT.print(section);
+  int16_t x=w-13;
+  hubTFT.drawPixel(x-4,8,HUB_GREEN);hubTFT.drawLine(x-6,6,x-2,6,HUB_GREEN);hubTFT.drawLine(x-8,4,x,4,HUB_GREEN);
   hubTFT.fillCircle(x,10,2,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED);
-  hubTFT.drawFastHLine(5,17,w-10,HUB_LINE);
+  hubTFT.drawFastHLine(5,18,w-10,HUB_LINE);
 }
 void hubClockFace(int16_t cx,int16_t cy,int16_t r){
   hubTFT.drawCircle(cx,cy,r,HUB_LINE);hubTFT.drawCircle(cx,cy,r-1,HUB_LINE);
@@ -2838,17 +2842,18 @@ void hubClockFace(int16_t cx,int16_t cy,int16_t r){
 
 static void catalogHeader(int16_t w, const char *section, uint16_t bg, uint16_t accent) {
   hubTFT.setTextWrap(false);
+  hubTFT.fillRect(5,4,2,10,accent);
   hubTFT.setTextSize(1);
   hubTFT.setTextColor(accent, bg);
-  hubTFT.setCursor(5,5); hubTFT.print("GOODWIN");
+  hubTFT.setCursor(10,5); hubTFT.print("GOODWIN");
   hubTFT.setTextColor(bg == 0xFFFF ? 0x0841 : HUB_MUTED, bg);
-  hubTFT.setCursor(55,5); hubTFT.print(section);
+  hubTFT.setCursor(57,5); hubTFT.print(section);
   const int16_t x = w - 13;
   hubTFT.drawPixel(x-4,8,HUB_GREEN);
   hubTFT.drawLine(x-6,6,x-2,6,HUB_GREEN);
   hubTFT.drawLine(x-8,4,x,4,HUB_GREEN);
   hubTFT.fillCircle(x,10,2,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED);
-  hubTFT.drawFastHLine(5,17,w-10,bg == 0xFFFF ? 0xBDF7 : HUB_LINE);
+  hubTFT.drawFastHLine(5,18,w-10,bg == 0xFFFF ? 0xBDF7 : HUB_LINE);
 }
 
 static void catalogCard(int16_t x, int16_t y, int16_t w, int16_t h,
@@ -2864,12 +2869,12 @@ static const char *catalogLayoutTitle(uint8_t id) {
   static const char *titles[42] = {
     "HOME", "CLOCK", "WEATHER", "INDOOR", "CLIMATE", "LIGHT", "AURORA WX", "TFT TEST",
     "ORBIT", "TERMINAL", "DARK TECH", "AMBER", "GLASS UI", "CYBER",
-    "COMPACT GRID", "STATUS STRIPS", "BIG CLOCK", "BIG TEMP", "WEATHER CARDS", "CLIMATE PRO",
-    "LIGHT + CLIMATE", "LIGHT + WEATHER", "SYSTEM STATUS", "WI-FI STATUS", "MATTER STATUS",
-    "MQTT STATUS", "VERTICAL CLEAN", "VERTICAL WEATHER", "VERTICAL CLIMATE", "NIGHT MODE",
-    "HIGH CONTRAST", "MONO TERMINAL", "WEATHER DARK", "WEATHER LIGHT", "ANALOG CLOCK",
-    "DIGITAL CLOCK", "SENSOR INFO", "NETWORK INFO", "MATTER / MQTT", "WEATHER DIAG",
-    "AMBIENT", "DIAGNOSTICS"
+    "COMPACT", "STATUS", "CLOCK XL", "TEMP XL", "WEATHER", "CLIMATE",
+    "LIGHT+CLIM", "LIGHT+WX", "SYSTEM", "WI-FI", "MATTER",
+    "MQTT", "VERT HOME", "VERT WX", "VERT CLIM", "NIGHT",
+    "CONTRAST", "MONO", "WX DARK", "WX LIGHT", "ANALOG",
+    "DIGITAL", "SENSOR", "NETWORK", "MATTER+MQ", "WX STATUS",
+    "AMBIENT", "DIAG"
   };
   return id < 42 ? titles[id] : "GOODWIN";
 }
@@ -3159,15 +3164,6 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
   }
   const uint16_t accent = (hubLayoutId == 30 || hubLayoutId == 31) ? HUB_GREEN :
                           (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
-  const char *names[] = {
-    "", "", "", "", "", "", "", "", "", "", "", "", "", "",
-    "COMPACT GRID", "STATUS STRIPS", "BIG CLOCK", "BIG TEMP", "WEATHER CARDS", "CLIMATE PRO",
-    "LIGHT + CLIMATE", "LIGHT + WEATHER", "SYSTEM STATUS", "WI-FI STATUS", "MATTER STATUS",
-    "MQTT STATUS", "VERTICAL CLEAN", "VERTICAL WEATHER", "VERTICAL CLIMATE", "NIGHT MODE",
-    "HIGH CONTRAST", "MONO TERMINAL", "WEATHER DARK", "WEATHER LIGHT", "ANALOG CLOCK",
-    "DIGITAL CLOCK", "SENSOR INFO", "NETWORK INFO", "MATTER / MQTT", "WEATHER DIAG",
-    "AMBIENT", "DIAGNOSTICS"
-  };
   if (hubLayoutId == 40) {
     hubTFT.fillScreen(0x0000);
     hubTFT.setTextSize(1);
@@ -3179,7 +3175,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
   }
   if (hubLayoutId == 30) hubTFT.fillScreen(0x0000);
   else if (hubLayoutId == 33) hubTFT.fillScreen(0xFFFF);
-  catalogHeader(w, names[hubLayoutId], hubLayoutId == 33 ? 0xFFFF : (hubLayoutId == 30 ? 0x0000 : HUB_BG), accent);
+  catalogHeader(w, catalogLayoutTitle(hubLayoutId), hubLayoutId == 33 ? 0xFFFF : (hubLayoutId == 30 ? 0x0000 : HUB_BG), accent);
   hubTFT.setTextColor(hubLayoutId == 33 ? 0x0841 : accent, hubLayoutId == 33 ? 0xFFFF : HUB_BG);
 
   switch (hubLayoutId) {
