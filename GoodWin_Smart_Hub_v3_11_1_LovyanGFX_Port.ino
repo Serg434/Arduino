@@ -2826,6 +2826,21 @@ void hubClockFace(int16_t cx,int16_t cy,int16_t r){
 }
 
 
+static void catalogHeader(int16_t w, const char *section, uint16_t bg, uint16_t accent) {
+  hubTFT.setTextWrap(false);
+  hubTFT.setTextSize(1);
+  hubTFT.setTextColor(accent, bg);
+  hubTFT.setCursor(5,5); hubTFT.print("GOODWIN");
+  hubTFT.setTextColor(bg == 0xFFFF ? 0x0841 : HUB_MUTED, bg);
+  hubTFT.setCursor(55,5); hubTFT.print(section);
+  const int16_t x = w - 13;
+  hubTFT.drawPixel(x-4,8,HUB_GREEN);
+  hubTFT.drawLine(x-6,6,x-2,6,HUB_GREEN);
+  hubTFT.drawLine(x-8,4,x,4,HUB_GREEN);
+  hubTFT.fillCircle(x,10,2,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED);
+  hubTFT.drawFastHLine(5,17,w-10,bg == 0xFFFF ? 0xBDF7 : HUB_LINE);
+}
+
 static void catalogCard(int16_t x, int16_t y, int16_t w, int16_t h,
                         const char *label, uint16_t fill, uint16_t accent) {
   hubCard(x, y, w, h, fill, accent);
@@ -2903,6 +2918,8 @@ static void drawExtendedLandscapeValues() {
       snprintf(v,sizeof(v),weatherValid?"OUT %.1f":"OUT --.-",weatherValid?outdoorTempC:0.0f); drawValueBox(10,101,140,14,black,0xFFE0,1,v);
       break;
     case 34:
+      hubTFT.fillCircle(hubTFT.width()/2,62,31,black);
+      hubClockFace(hubTFT.width()/2,62,29);
       drawValueBox(10,110,140,14,black,HUB_WHITE,1,timeText.c_str());
       break;
     case 31:
@@ -2926,6 +2943,7 @@ static void drawExtendedLandscapeValues() {
 }
 
 static void drawExtendedLandscapeLayout(int16_t w, int16_t h) {
+  if (h <= 0) return;
   const uint16_t bg = hubLayoutId == 30 ? 0x0000 : (hubLayoutId == 33 ? 0xFFFF : HUB_BG);
   const uint16_t accent = hubLayoutId == 31 ? HUB_GREEN : (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
   if (hubLayoutId == 40) {
@@ -2936,7 +2954,7 @@ static void drawExtendedLandscapeLayout(int16_t w, int16_t h) {
     return;
   }
   hubTFT.fillScreen(bg);
-  hubHeader(w,catalogLayoutTitle(hubLayoutId));
+  catalogHeader(w,catalogLayoutTitle(hubLayoutId),bg,accent);
   if (hubLayoutId == 34) {
     hubClockFace(w/2,62,29);
     hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,bg); hubTFT.setCursor(9,101); hubTFT.print("ANALOG / LOCAL TIME");
@@ -3083,6 +3101,8 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),weatherValid?"PRESS %.0f hPa":"PRESS ----",weatherValid?outdoorPressureHpa:0.0f); drawValueBox(10,136,106,14,0xFFFF,0x0841,1,v);
       break;
     case 34: // Analog clock
+      hubTFT.fillCircle(hubTFT.width()/2,76,min(hubTFT.width(),hubTFT.height())/3+2,HUB_BG);
+      hubClockFace(hubTFT.width()/2,76,min(hubTFT.width(),hubTFT.height())/3);
       drawValueBox(10,129,106,16,HUB_BG,HUB_WHITE,1,timeText.c_str());
       break;
     case 35: // Digital clock
@@ -3122,11 +3142,11 @@ static void drawExtendedLayoutValues() {
 }
 
 static void drawExtendedLayout(int16_t w, int16_t h) {
+  if (h <= 0) return;
   if (w > h) {
     drawExtendedLandscapeLayout(w, h);
     return;
   }
-  const bool landscape = w > h;
   const uint16_t accent = (hubLayoutId == 30 || hubLayoutId == 31) ? HUB_GREEN :
                           (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
   const char *names[] = {
@@ -3149,7 +3169,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
   }
   if (hubLayoutId == 30) hubTFT.fillScreen(0x0000);
   else if (hubLayoutId == 33) hubTFT.fillScreen(0xFFFF);
-  hubHeader(w, names[hubLayoutId]);
+  catalogHeader(w, names[hubLayoutId], hubLayoutId == 33 ? 0xFFFF : (hubLayoutId == 30 ? 0x0000 : HUB_BG), accent);
   hubTFT.setTextColor(hubLayoutId == 33 ? 0x0841 : accent, hubLayoutId == 33 ? 0xFFFF : HUB_BG);
 
   switch (hubLayoutId) {
