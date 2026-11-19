@@ -290,10 +290,18 @@ static char weatherProvider[24] = "—";
 static portMUX_TYPE weatherTextMux = portMUX_INITIALIZER_UNLOCKED;
 
 static void setWeatherText(const char *status, const char *provider = nullptr) {
+  bool changed = false;
   portENTER_CRITICAL(&weatherTextMux);
-  if (status) strlcpy(weatherStatus, status, sizeof(weatherStatus));
-  if (provider) strlcpy(weatherProvider, provider, sizeof(weatherProvider));
+  if (status && strcmp(weatherStatus, status) != 0) {
+    strlcpy(weatherStatus, status, sizeof(weatherStatus));
+    changed = true;
+  }
+  if (provider && strcmp(weatherProvider, provider) != 0) {
+    strlcpy(weatherProvider, provider, sizeof(weatherProvider));
+    changed = true;
+  }
   portEXIT_CRITICAL(&weatherTextMux);
+  if (changed) hubWeatherDirty = true;
 }
 
 static void copyWeatherText(char *statusOut, size_t statusSize, char *providerOut, size_t providerSize) {
