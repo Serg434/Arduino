@@ -4462,25 +4462,36 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
-    case 22: { // Windows 95 Mystify: interlaced neon polygons with long moving edges.
-      const int16_t cx = w / 2, cy = h / 2;
+    case 22: { // Mystify 95: two independently bouncing polygons with persistent trails.
+      static const uint16_t cyanTrail[12] = {0x07FF,0x07BF,0x0778,0x05D2,0x04AD,0x0368,0x0244,0x01E3,0x0162,0x0101,0x00A0,0x0040};
+      static const uint16_t magentaTrail[12] = {0xF81F,0xD01B,0xA817,0x8013,0x6810,0x500D,0x400B,0x3008,0x2006,0x1804,0x1002,0x0801};
       for (uint8_t layer = 0; layer < 2; ++layer) {
-        int16_t px[4], py[4];
-        const float drift = phase * (layer ? -0.37f : 0.51f) + layer * 1.4f;
+        const uint8_t slot = saverMystifyHead[layer];
         for (uint8_t p = 0; p < 4; ++p) {
-          const float a = drift + p * 1.570796f;
-          const float rx = 28.0f + 13.0f * sinf(phase * 0.73f + p * 1.7f + layer);
-          const float ry = 35.0f + 13.0f * cosf(phase * 0.61f + p * 1.3f + layer);
-          px[p] = cx + (int16_t)(cosf(a) * rx);
-          py[p] = cy + (int16_t)(sinf(a * 1.11f) * ry);
+          saverMystifyTrailX[layer][slot][p] = saverMystifyX[layer][p];
+          saverMystifyTrailY[layer][slot][p] = saverMystifyY[layer][p];
         }
-        const uint16_t glow = layer ? 0x481F : 0x03EF;
-        const uint16_t neon = layer ? 0xF81F : 0x07FF;
+        saverMystifyHead[layer] = (uint8_t)((slot + 1) % 12);
+        if (saverMystifyCount[layer] < 12) ++saverMystifyCount[layer];
+        for (uint8_t age = 0; age < saverMystifyCount[layer]; ++age) {
+          const uint8_t idx = (uint8_t)((saverMystifyHead[layer] + 11 - age) % 12);
+          const uint16_t c = layer ? magentaTrail[age] : cyanTrail[age];
+          const uint16_t glow = age < 2 ? (layer ? 0x8013 : 0x03EF) : (layer ? 0x3008 : 0x0148);
+          for (uint8_t p = 0; p < 4; ++p) {
+            const uint8_t n = (p + 1) & 3;
+            const int16_t x1 = saverMystifyTrailX[layer][idx][p], y1 = saverMystifyTrailY[layer][idx][p];
+            const int16_t x2 = saverMystifyTrailX[layer][idx][n], y2 = saverMystifyTrailY[layer][idx][n];
+            if (age < 3) cv.drawWideLine(x1, y1, x2, y2, 2.0f, glow);
+            cv.drawLine(x1, y1, x2, y2, c);
+          }
+        }
         for (uint8_t p = 0; p < 4; ++p) {
-          const uint8_t n = (p + 1) & 3;
-          cv.drawWideLine(px[p], py[p], px[n], py[n], 3.0f, glow);
-          cv.drawWideLine(px[p], py[p], px[n], py[n], 1.0f, neon);
-          cv.fillCircle(px[p], py[p], 2, HUB_WHITE);
+          saverMystifyX[layer][p] += saverMystifyVX[layer][p];
+          saverMystifyY[layer][p] += saverMystifyVY[layer][p];
+          if (saverMystifyX[layer][p] < 3 || saverMystifyX[layer][p] >= w - 3) saverMystifyVX[layer][p] = -saverMystifyVX[layer][p];
+          if (saverMystifyY[layer][p] < 3 || saverMystifyY[layer][p] >= h - 3) saverMystifyVY[layer][p] = -saverMystifyVY[layer][p];
+          saverMystifyX[layer][p] = constrain(saverMystifyX[layer][p], 3, w - 4);
+          saverMystifyY[layer][p] = constrain(saverMystifyY[layer][p], 3, h - 4);
         }
       }
       break;
@@ -4508,43 +4519,217 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
-    case 24: { // Windows 95 3D Pipes: luminous tubular paths with joints and highlights.
+    case 24: { // Classic 3D Pipes: independent voxel paths projected as shaded 3D tubes.
       const int16_t cx = w / 2, cy = h / 2;
-      const uint16_t tube[4] = { 0x03EF, 0x7DFF, 0xF81F, 0xFEA0 };
+      static const uint16_t tube[4] = {0x03EF,0x7DFF,0xF81F,0xFEA0};
       for (uint8_t p = 0; p < 4; ++p) {
-        int16_t lastX = cx, lastY = cy;
-        for (uint8_t k = 0; k < 18; ++k) {
-          const float t = phase * (0.42f + p * 0.07f) + k * 0.31f + p * 1.57f;
-          const int16_t x = cx + (int16_t)(sinf(t * (0.73f + p * 0.06f)) * (18.0f + k * 1.65f));
-          const int16_t y = cy + (int16_t)(cosf(t * 0.91f + p) * (12.0f + k * 1.45f));
-          if (k) {
-            cv.drawWideLine(lastX + 1, lastY + 2, x + 1, y + 2, 4.0f, 0x1082);
-            cv.drawWideLine(lastX, lastY, x, y, 2.6f, tube[p]);
-            cv.drawLine(lastX, lastY - 1, x, y - 1, 0xFFFF);
+        if (++saverPipeTick[p] >= 3) {
+          saverPipeTick[p] = 0;
+          int8_t nx = saverPipeDir[p][0], ny = saverPipeDir[p][1], nz = saverPipeDir[p][2];
+          int8_t px = saverPipePath[p][saverPipeHead[p]][0], py = saverPipePath[p][saverPipeHead[p]][1], pz = saverPipePath[p][saverPipeHead[p]][2];
+          if (px + nx < 0 || px + nx > 6 || py + ny < 0 || py + ny > 6 || pz + nz < 0 || pz + nz > 6) {
+            uint8_t axis = random(0,3); nx = ny = nz = 0;
+            if (axis == 0) nx = (px < 3) ? 1 : -1;
+            else if (axis == 1) ny = (py < 3) ? 1 : -1;
+            else nz = (pz < 3) ? 1 : -1;
+          } else if (random(0,5) == 0) {
+            uint8_t axis = random(0,3); nx = ny = nz = 0;
+            if (axis == 0) nx = random(0,2) ? 1 : -1;
+            else if (axis == 1) ny = random(0,2) ? 1 : -1;
+            else nz = random(0,2) ? 1 : -1;
+            if (px + nx < 0 || px + nx > 6 || py + ny < 0 || py + ny > 6 || pz + nz < 0 || pz + nz > 6) {
+              nx = saverPipeDir[p][0]; ny = saverPipeDir[p][1]; nz = saverPipeDir[p][2];
+            }
           }
-          if ((k % 5) == 0) cv.fillCircle(x, y, 3, tube[p]);
-          lastX = x; lastY = y;
+          saverPipeDir[p][0] = nx; saverPipeDir[p][1] = ny; saverPipeDir[p][2] = nz;
+          saverPipeHead[p] = (uint8_t)((saverPipeHead[p] + 1) % 24);
+          saverPipePath[p][saverPipeHead[p]][0] = constrain(px + nx, 0, 6);
+          saverPipePath[p][saverPipeHead[p]][1] = constrain(py + ny, 0, 6);
+          saverPipePath[p][saverPipeHead[p]][2] = constrain(pz + nz, 0, 6);
+          if (saverPipeCount[p] < 24) ++saverPipeCount[p];
+        }
+        int16_t prevX = 0, prevY = 0;
+        for (uint8_t n = 0; n < saverPipeCount[p]; ++n) {
+          const uint8_t idx = (uint8_t)((saverPipeHead[p] + 24 - n) % 24);
+          const int16_t gx = saverPipePath[p][idx][0], gy = saverPipePath[p][idx][1], gz = saverPipePath[p][idx][2];
+          const int16_t sx = cx + (gx - gy) * 7;
+          const int16_t sy = cy + (gx + gy - 6) * 3 - (gz - 3) * 7;
+          if (n) {
+            cv.drawWideLine(prevX + 2, prevY + 3, sx + 2, sy + 3, 5.0f, 0x1082);
+            cv.drawWideLine(prevX, prevY, sx, sy, 3.0f, tube[p]);
+            cv.drawLine(prevX - 1, prevY - 1, sx - 1, sy - 1, 0xFFFF);
+          }
+          cv.fillCircle(sx, sy, 2, tube[p]);
+          prevX = sx; prevY = sy;
         }
       }
       break;
     }
 
-    case 25: { // Windows 95 3D Maze: a moving first-person corridor perspective.
-      const int16_t cx = w / 2, cy = h / 2;
-      for (uint8_t i = 0; i < 8; ++i) {
-        const uint8_t depth = (uint8_t)((now / 42U + i * 13U) % 100U);
-        const int16_t ww = 8 + depth * (w - 16) / 100;
-        const int16_t hh = 7 + depth * (h - 14) / 100;
-        const int16_t shift = (int16_t)(sinf(phase * 0.7f + i * 1.1f) * (depth * 0.12f));
-        const uint16_t wall = (i & 1) ? 0x3A0D : 0x2149;
-        cv.drawRect(cx - ww / 2 + shift, cy - hh / 2, ww, hh, wall);
-        cv.drawLine(cx - ww / 2 + shift, cy - hh / 2, cx - ww / 3, cy - hh / 3, 0x5DDF);
-        cv.drawLine(cx + ww / 2 + shift, cy - hh / 2, cx + ww / 3, cy - hh / 3, 0x5DDF);
+    case 25: { // 3D Maze: generated 8x8 perfect maze, first-person wall follower and perspective planes.
+      static const int8_t dx[4] = {0,1,0,-1}, dy[4] = {-1,0,1,0};
+      static const uint8_t bits[4] = {1,2,4,8};
+      if (++saverMazeMoveTick >= 4) {
+        saverMazeMoveTick = 0;
+        const uint8_t left = (uint8_t)((saverMazeDir + 3) & 3);
+        const uint8_t front = saverMazeDir;
+        const uint8_t right = (uint8_t)((saverMazeDir + 1) & 3);
+        if (!(saverMazeWalls[saverMazePlayerY][saverMazePlayerX] & bits[left])) saverMazeDir = left;
+        else if (saverMazeWalls[saverMazePlayerY][saverMazePlayerX] & bits[front]) {
+          if (!(saverMazeWalls[saverMazePlayerY][saverMazePlayerX] & bits[right])) saverMazeDir = right;
+          else saverMazeDir = (uint8_t)((saverMazeDir + 2) & 3);
+        }
+        const int8_t nx = (int8_t)saverMazePlayerX + dx[saverMazeDir];
+        const int8_t ny = (int8_t)saverMazePlayerY + dy[saverMazeDir];
+        if (nx >= 0 && nx < 8 && ny >= 0 && ny < 8 &&
+            !(saverMazeWalls[saverMazePlayerY][saverMazePlayerX] & bits[saverMazeDir])) {
+          saverMazePlayerX = (uint8_t)nx; saverMazePlayerY = (uint8_t)ny;
+        }
       }
-      cv.fillCircle(cx, cy, 2, HUB_CYAN);
+      const int16_t cx = w / 2;
+      const uint8_t dir = saverMazeDir;
+      for (uint8_t depth = 0; depth < 4; ++depth) {
+        const int8_t mx = (int8_t)saverMazePlayerX + dx[dir] * depth;
+        const int8_t my = (int8_t)saverMazePlayerY + dy[dir] * depth;
+        const bool outside = mx < 0 || mx >= 8 || my < 0 || my >= 8;
+        const uint8_t walls = outside ? 0x0F : saverMazeWalls[(uint8_t)my][(uint8_t)mx];
+        const uint8_t leftDir = (uint8_t)((dir + 3) & 3), rightDir = (uint8_t)((dir + 1) & 3);
+        const int16_t nw = (w / 2 - 5) / (depth + 1), fw = (w / 2 - 5) / (depth + 2);
+        const int16_t nt = 7 + depth * 13, nb = h - 7 - depth * 13;
+        const int16_t ft = 7 + (depth + 1) * 13, fb = h - 7 - (depth + 1) * 13;
+        const uint16_t shade = depth == 0 ? 0x4208 : depth == 1 ? 0x3186 : depth == 2 ? 0x2104 : 0x1082;
+        if (walls & bits[leftDir]) {
+          cv.fillTriangle(cx - nw, nt, cx - fw, ft, cx - fw, fb, shade);
+          cv.fillTriangle(cx - nw, nt, cx - fw, fb, cx - nw, nb, shade);
+          cv.drawLine(cx - nw, nt, cx - fw, ft, 0x7BEF);
+          cv.drawLine(cx - nw, nb, cx - fw, fb, 0x39E7);
+        }
+        if (walls & bits[rightDir]) {
+          cv.fillTriangle(cx + nw, nt, cx + fw, ft, cx + fw, fb, shade);
+          cv.fillTriangle(cx + nw, nt, cx + fw, fb, cx + nw, nb, shade);
+          cv.drawLine(cx + nw, nt, cx + fw, ft, 0x7BEF);
+          cv.drawLine(cx + nw, nb, cx + fw, fb, 0x39E7);
+        }
+        if (outside || (walls & bits[dir])) {
+          cv.fillRect(cx - fw, ft, fw * 2, fb - ft, depth < 2 ? 0x3186 : 0x2104);
+          cv.drawRect(cx - fw, ft, fw * 2, fb - ft, 0x7BEF);
+          cv.drawFastVLine(cx, ft + 2, fb - ft - 4, 0x4208);
+          break;
+        }
+      }
+      cv.drawFastHLine(4, h - 5, w - 8, 0x39E7);
+      cv.fillCircle(cx, h / 2, 1, HUB_WHITE);
       break;
     }
 
+    case 26: { // UE5-inspired Neon Rift: layered portal geometry, volumetric light and shard field.
+      const int16_t cx = w / 2, cy = h / 2;
+      cv.fillGradientRect(0, 0, w, h, 0x0814, 0x0000);
+      for (uint8_t i = 0; i < 7; ++i) {
+        const float z = fmodf(i * 15.0f + now * 0.045f, 100.0f);
+        const int16_t rx = 5 + (int16_t)(z * 0.56f), ry = 4 + (int16_t)(z * 0.43f);
+        const uint16_t c = i & 1 ? 0x501F : 0x03EF;
+        cv.drawRoundRect(cx - rx, cy - ry, rx * 2, ry * 2, 5, c);
+        if (i < 3) cv.drawWideLine(cx - rx, cy - ry, cx + rx, cy - ry, 2.0f, 0x2149);
+      }
+      for (uint8_t i = 0; i < 18; ++i) {
+        const float a = phase * (0.7f + (i % 4) * 0.11f) + i * 2.39996f;
+        const float r = 14.0f + (i * 7U + now / 30U) % 48U;
+        const int16_t x = cx + (int16_t)(cosf(a) * r);
+        const int16_t y = cy + (int16_t)(sinf(a * 1.17f) * r * 0.72f);
+        const uint16_t c = i % 3 == 0 ? HUB_WHITE : (i & 1 ? 0x7DFF : 0xA01F);
+        cv.fillTriangle(x, y - 3, x + 3, y + 2, x - 2, y + 2, c);
+      }
+      cv.drawArc(cx, cy, 47, 45, phase * 32.0f, phase * 32.0f + 235.0f, 0x7DFF);
+      cv.drawArc(cx, cy, 35, 33, -phase * 41.0f, -phase * 41.0f + 170.0f, 0xF81F);
+      cv.fillSmoothCircle(cx, cy, 5, HUB_WHITE);
+      break;
+    }
+
+    case 27: { // Plasma field: compact RGB565 interference palette, no external assets.
+      static const uint16_t palette[16] = {0x0008,0x001F,0x081F,0x301F,0x601F,0xA01F,0xF81F,0xF9B7,0xFFE0,0xBFE0,0x57E0,0x07E0,0x07EF,0x05FF,0x03BF,0x019F};
+      for (uint8_t gy = 0; gy < 20; ++gy) for (uint8_t gx = 0; gx < 16; ++gx) {
+        const float v = sinf(gx * 0.53f + phase * 1.7f) + sinf(gy * 0.41f - phase * 1.2f) +
+                        sinf((gx + gy) * 0.29f + phase * 0.8f);
+        const uint8_t pi = (uint8_t)constrain((int)((v + 3.0f) * 2.5f), 0, 15);
+        cv.fillRect(gx * 8, gy * 6, 8, 6, palette[pi]);
+      }
+      break;
+    }
+
+    case 28: { // Lava Lamp: slow organic blobs with layered hot cores.
+      cv.fillGradientRect(0, 0, w, h, 0x2004, 0x0000);
+      for (uint8_t i = 0; i < 5; ++i) {
+        const float t = phase * (0.34f + i * 0.035f) + i * 1.2566f;
+        const int16_t x = w / 2 + (int16_t)(sinf(t * 0.83f) * (22.0f + i * 3.0f));
+        const int16_t y = h / 2 + (int16_t)(cosf(t * 0.61f + i) * (27.0f + i * 2.0f));
+        const uint8_t r = 9 + (i % 3) * 3;
+        const uint16_t c = i & 1 ? 0xF800 : 0xFD20;
+        cv.fillSmoothCircle(x, y, r + 3, 0x6000);
+        cv.fillSmoothCircle(x, y, r, c);
+        cv.fillSmoothCircle(x - 2, y - 3, max(2, (int)r / 3), 0xFFE0);
+      }
+      break;
+    }
+
+    case 29: { // Vortex tunnel: spiral particle streams with perspective streaks.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 44; ++i) {
+        const float z = fmodf(i * 17.0f + now * (0.07f + (i % 4) * 0.008f), 100.0f) + 1.0f;
+        const float r = 4.0f + z * 0.48f;
+        const float a = i * 2.39996f + phase * (1.8f + (i % 3) * 0.2f);
+        const int16_t x = cx + (int16_t)(cosf(a) * r);
+        const int16_t y = cy + (int16_t)(sinf(a) * r * 0.72f);
+        const int16_t tx = cx + (int16_t)(cosf(a - 0.18f) * (r - 5.0f));
+        const int16_t ty = cy + (int16_t)(sinf(a - 0.18f) * (r - 5.0f) * 0.72f);
+        if (x >= 0 && x < w && y >= 0 && y < h) {
+          const uint16_t c = z < 28 ? HUB_WHITE : (i & 1 ? 0x7DFF : 0xA01F);
+          cv.drawWideLine(tx, ty, x, y, z < 30 ? 2.0f : 1.0f, c);
+          cv.fillCircle(x, y, z < 20 ? 2 : 1, c);
+        }
+      }
+      cv.fillSmoothCircle(cx, cy, 5, 0x0814);
+      cv.fillSmoothCircle(cx, cy, 2, HUB_WHITE);
+      break;
+    }
+
+    case 30: { // Rain on Glass: independent droplets, elongated highlights and impact rings.
+      for (uint8_t i = 0; i < 20; ++i) {
+        const int16_t x = saverGlassX[i], y = saverGlassY[i];
+        const uint8_t r = saverGlassRadius[i];
+        if (y >= 0 && y < h) {
+          cv.drawWideLine(x, y - r * 3, x, y, 1.0f, 0x39DF);
+          cv.fillSmoothCircle(x, y, r, 0x5DDF);
+          cv.drawPixel(x - 1, y - 1, HUB_WHITE);
+          if ((y / 11) % 3 == 0) cv.drawArc(x, y + r + 2, r + 4, r + 3, 15.0f, 165.0f, 0x2149);
+        }
+        saverGlassY[i] += saverGlassSpeed[i];
+        if (saverGlassY[i] > h + 10) {
+          saverGlassY[i] = random(-25, 0); saverGlassX[i] = random(4, max(5, (int)w - 4));
+          saverGlassSpeed[i] = random(1, 4); saverGlassRadius[i] = random(2, 5);
+        }
+      }
+      break;
+    }
+
+    case 31: { // Pixel Fire: classic bottom-up cellular fire simulation.
+      for (uint8_t x = 0; x < 64; ++x) saverFireHeat[39][x] = random(160, 256);
+      for (int8_t y = 38; y >= 0; --y) for (uint8_t x = 0; x < 64; ++x) {
+        const uint8_t below = saverFireHeat[y + 1][x];
+        const uint8_t decay = random(0, 4);
+        saverFireHeat[y][x] = below > decay ? below - decay : 0;
+      }
+      for (uint8_t y = 0; y < 39; ++y) for (uint8_t x = 0; x < 64; ++x) {
+        const uint8_t heat = saverFireHeat[y][x];
+        uint8_t red = 0, green = 0, blue = 0;
+        if (heat < 85) red = heat * 3;
+        else if (heat < 170) { red = 255; green = (heat - 85) * 3; }
+        else { red = 255; green = 255; blue = (heat - 170) * 3; }
+        const uint16_t c = cv.color565(red, green, blue);
+        cv.fillRect(x * 2, y * 3, 2, 3, c);
+      }
+      break;
+    }
     default:
       presentFrame = false;
       break;
@@ -4672,7 +4857,7 @@ void updateSmartHub() {
       drawSmartHub();
       return;
     }
-    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 13 || hubSaverId == 20 || hubSaverId == 24 || hubSaverId == 25) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS;
+    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 13 || hubSaverId == 20 || hubSaverId == 22 || hubSaverId == 24 || hubSaverId == 25 || hubSaverId == 26 || hubSaverId == 27 || hubSaverId == 31) ? HUB_SAVER_COMPLEX_FRAME_MS : HUB_SAVER_FRAME_MS;
     if (now - hubSaverLastFrameAt >= saverInterval) {
       hubSaverLastFrameAt = now;
       drawHubScreenSaverFrame();
