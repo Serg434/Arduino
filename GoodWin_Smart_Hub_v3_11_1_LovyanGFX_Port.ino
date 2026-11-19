@@ -1086,9 +1086,9 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 <section class="card section matter-pairing"><div class="section-head"><h2>Matter · Сопряжение</h2><span>LOCAL NETWORK</span></div><div class="pair-code" onclick="copyCode()"><strong id="pairCode">—</strong><span class="copy-label">▣ КОПИРОВАТЬ</span></div><div class="pair-note">Нажми на код, чтобы скопировать его. QR-код можно отсканировать в приложении умного дома.</div><div class="qr-wrap"><div id="qrcode"></div></div></section>
 <section class="card section hub-config-card" id="hubConfigCard"><div class="section-head"><div><div class="eyebrow">DISPLAY ENGINE</div><h2>Экран и оформление</h2></div><span>ST7735 · 128×160 / 160×128</span></div>
 <div class="hub-controls">
- <div class="hub-control"><label for="hubLayout">Макет экрана</label><select id="hubLayout"><option value="0">Dashboard — сводка</option><option value="1">Часы крупно</option><option value="2">Погода крупно</option><option value="3">Домашний климат</option><option value="4">Дом + улица</option><option value="5">Состояние света</option><option value="6">Aurora — погода PRO</option><option value="7">Тест TFT · FPS</option><option value="8">Orbit — neon telemetry</option><option value="9">Terminal — monochrome</option><option value="10">Dark Tech · prototype</option><option value="11">Amber · prototype</option><option value="12">Glass UI · prototype</option><option value="13">Cyber · prototype</option></select></div>
+ <div class="hub-control"><label for="hubLayout">Макет экрана</label><select id="hubLayout"><option value="0">Загрузка макетов…</option></select></div>
  <div class="hub-control"><label for="hubOrientation">Ориентация дисплея</label><select id="hubOrientation"><option value="0">Портрет · 128×160</option><option value="1">Альбом · 160×128</option><option value="2">Портрет перевёрнутый · 128×160</option><option value="3">Альбом перевёрнутый · 160×128</option></select></div>
- <div class="hub-control"><label for="hubSaver">Заставка</label><select id="hubSaver"><option value="0">Выключена</option><option value="1">Часы</option><option value="2">Плавающая точка</option><option value="3">Звёзды</option><option value="4">Дождь</option><option value="5">Снег</option><option value="6">Облака</option><option value="7">Температура и влажность</option><option value="8">Волна</option><option value="9">Пульс</option><option value="10">Северное сияние</option><option value="11">DNA · Double Helix</option></select><small class="hub-note">Автозапуск заставки по таймеру бездействия.</small></div><div class="hub-control"><label for="hubSaverIdle">Запускать через</label><select id="hubSaverIdle"><option value="0">Отключить автозапуск</option><option value="30">30 секунд</option><option value="60">1 минута</option><option value="120">2 минуты</option><option value="300">5 минут</option><option value="600">10 минут</option><option value="1800">30 минут</option></select><button id="hubSaverStart" type="button" class="btn" onclick="startHubSaverNow()">Запустить заставку сейчас</button></div>
+ <div class="hub-control"><label for="hubSaver">Заставка</label><select id="hubSaver"><option value="0">Загрузка заставок…</option></select><small class="hub-note">Автозапуск заставки по таймеру бездействия.</small></div><div class="hub-control"><label for="hubSaverIdle">Запускать через</label><select id="hubSaverIdle"><option value="0">Отключить автозапуск</option><option value="30">30 секунд</option><option value="60">1 минута</option><option value="120">2 минуты</option><option value="300">5 минут</option><option value="600">10 минут</option><option value="1800">30 минут</option></select><button id="hubSaverStart" type="button" class="btn" onclick="startHubSaverNow()">Запустить заставку сейчас</button></div>
  <div class="hub-control"><label for="hubBrightness">Яркость подсветки: <strong id="hubBrightnessValue">85%</strong></label><input id="hubBrightness" type="range" min="1" max="100" value="85"></div>
  <div class="hub-control"><label for="hubTestFps">FPS тестового экрана: <strong id="hubTestFpsValue">20 FPS</strong></label><input id="hubTestFps" type="range" min="1" max="60" value="20"><small class="hub-note">Выбери макет «Тест TFT · FPS». Целевой и фактический FPS будут показаны на дисплее и в Serial.</small></div>
  <label class="hub-switch"><input id="hubDisplayEnabled" type="checkbox" checked> <strong>Экран включён</strong></label>
@@ -1328,6 +1328,21 @@ updateStatus();setInterval(updateStatus,800);
 // ---- Screen configuration and weather telemetry ----
 let hubConfigBusy=false,hubConfigDirty=false,hubConfigSaving=false,hubConfigSavePending=false,hubConfigRevision=0;
 let hubBrightnessInteracting=false;
+function populateHubSelect(id, items, selected) {
+ const el=document.getElementById(id);
+ if(!el||!Array.isArray(items)||!items.length)return;
+ const current=String(selected??el.value??0);
+ const frag=document.createDocumentFragment();
+ items.forEach(item=>{
+  const option=document.createElement('option');
+  option.value=String(item.id);
+  option.textContent=item.name;
+  frag.appendChild(option);
+ });
+ el.replaceChildren(frag);
+ el.value=current;
+ if(el.selectedIndex<0)el.selectedIndex=0;
+}
 async function loadHubConfig(silent=false){
  const slider=document.getElementById('hubBrightness');
  const testFps=document.getElementById('hubTestFps');
@@ -1338,6 +1353,8 @@ async function loadHubConfig(silent=false){
  const requestRevision=hubConfigRevision;
  try{const r=await fetch('/hub/config',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);const d=await r.json();
   if(hubConfigDirty||hubConfigSaving||hubBrightnessInteracting||document.activeElement===slider||document.activeElement===testFps||requestRevision!==hubConfigRevision)return;
+  populateHubSelect('hubLayout',d.layouts,d.layout??0);
+  populateHubSelect('hubSaver',d.savers,d.saver??0);
   document.getElementById('hubLayout').value=d.layout??0;document.getElementById('hubSaver').value=d.saver??0;document.getElementById('hubSaverIdle').value=d.saverIdle??60;
   document.getElementById('hubOrientation').value=d.orientation??0;document.getElementById('hubDisplayEnabled').checked=!!d.display;
   // Server is authoritative only when the user is not editing the control.
@@ -3804,6 +3821,7 @@ static void initHubScreenSaver() {
   // visible animation area is composed completely off-screen and transferred
   // in one DMA operation, so no saver exposes an erase-then-redraw sequence.
   if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != bandHeight) {
+    hubTFT.waitDMA();
     delete hubSaverCanvas;
     hubSaverCanvas = nullptr;
     hubSaverCanvasW = 0;
@@ -3821,7 +3839,8 @@ static void initHubScreenSaver() {
         } else {
           delete hubSaverCanvas;
           hubSaverCanvas = nullptr;
-          LOG_ERR("LovyanGFX saver sprite allocation failed; heap=%u", ESP.getFreeHeap());
+          LOG_ERR("LovyanGFX saver sprite allocation failed; free=%u largest=%u",
+                  ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         }
       } else {
         delete hubSaverCanvas;
@@ -4302,10 +4321,10 @@ static void drawHubScreenSaverFrame() {
   if (presentFrame) {
     // pushSprite submits the native sprite to the display. Keep its RGB565
     // buffer unchanged until the destination DMA engine has finished reading it.
-    hubTFT.startWrite();
+    // LGFX_Sprite::pushSprite owns the destination write transaction.
+    // Avoid nesting it inside a manual startWrite()/endWrite() pair.
     cv.pushSprite(0, 25);
     hubTFT.waitDMA();
-    hubTFT.endWrite();
   }
 
   const uint32_t drawUs = micros() - frameStartedUs;
@@ -4901,10 +4920,21 @@ void handleHubConfig() {
       statePrefs.end();
     }
   }
-  String json = "{\"layout\":" + String(hubLayoutId) + ",\"layoutName\":\"" + HUB_LAYOUT_NAMES[hubLayoutId] +
+  String json = "{\"layout\":" + String(hubLayoutId) + ",\"layoutName\":\"" + jsonEscape(String(HUB_LAYOUT_NAMES[hubLayoutId])) +
     "\",\"saver\":" + String(hubSaverId) + ",\"orientation\":" + String(hubOrientation) +
     ",\"display\":" + String(hubDisplayEnabled ? "true" : "false") +
-    ",\"brightness\":" + String(displayBrightnessPercent) + ",\"testFps\":" + String(hubTestFpsTarget) + ",\"saverIdle\":" + String(hubSaverIdleSeconds) + "}";
+    ",\"brightness\":" + String(displayBrightnessPercent) + ",\"testFps\":" + String(hubTestFpsTarget) + ",\"saverIdle\":" + String(hubSaverIdleSeconds);
+  json += ",\"layouts\":[";
+  for (uint8_t i = 0; i < HUB_LAYOUT_COUNT; ++i) {
+    if (i) json += ',';
+    json += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEscape(String(HUB_LAYOUT_NAMES[i])) + "\"}";
+  }
+  json += "],\"savers\":[";
+  for (uint8_t i = 0; i < HUB_SAVER_COUNT; ++i) {
+    if (i) json += ',';
+    json += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEscape(String(HUB_SAVER_NAMES[i])) + "\"}";
+  }
+  json += "]}";
   server.send(200, "application/json; charset=utf-8", json);
 }
 void handleWeatherRefresh() {
