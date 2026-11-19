@@ -219,8 +219,8 @@ GoodWinTFT hubTFT;
 static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
 static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
 static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
-// Shared off-screen animation canvas: DNA, wave and aurora are composed off-screen
-// and transferred as one image to avoid visible clear-then-redraw flicker.
+// Shared off-screen animation canvas: every screensaver is composed as a complete
+// RGB565 scene and transferred as one DMA image to eliminate clear-then-redraw flicker.
 static GFXcanvas16 *hubSaverCanvas = nullptr;
 static int16_t hubSaverCanvasW = 0;
 static int16_t hubSaverCanvasH = 0;
@@ -3783,8 +3783,8 @@ static void drawModernLayoutPartials() {
 }
 
 // ============================================================
-// Low-flicker screen saver engine. The background is painted only when the
-// saver starts; animated frames touch only the moving object/strip.
+// Unified LovyanGFX screensaver engine. All effects use one reusable RGB565
+// scene buffer, one premium gradient background and one synchronized DMA transfer.
 // ============================================================
 void hubMarkActivity() {
   hubLastActivityAt = millis();
@@ -4403,6 +4403,11 @@ void updateSmartHub() {
   if (abs(uiRssi - lastUiRssi) >= 5) {
     lastUiRssi = uiRssi;
     if (hubLayoutId == 23 || hubLayoutId == 37 || hubLayoutId == 41) hubSensorDirty = true;
+  }
+  static uint32_t lastDiagnosticsUiAt = 0;
+  if (hubLayoutId == 41 && (uint32_t)(now - lastDiagnosticsUiAt) >= 1000UL) {
+    lastDiagnosticsUiAt = now;
+    hubSensorDirty = true;
   }
 
   if (!hubDisplayEnabled) {
