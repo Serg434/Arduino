@@ -3802,7 +3802,6 @@ static void hubInvalidateValueCache();
 static void initHubScreenSaver() {
   const int16_t w = hubTFT.width();
   const int16_t h = hubTFT.height();
-  const int16_t bandTop = 25;
   const int16_t bandHeight = h - 43;
 
   // One shared RGB565 scene buffer is used by every animated saver. The
