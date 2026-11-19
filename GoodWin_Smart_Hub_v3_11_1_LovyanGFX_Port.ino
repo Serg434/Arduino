@@ -60,7 +60,7 @@ static const char *goodwinFlashModeName(FlashMode_t mode) {
 }
 
 // ============================================================
-// GoodWin Smart Hub v3.11.2-dev LovyanGFX port | DMA partial UI + buffered screensavers + resilient weather
+// GoodWin Smart Hub v3.11.3-dev LovyanGFX atomic UI + onboard adaptive agent | DMA partial UI + buffered screensavers + resilient weather
 // Matter node: LED dimmer + TFT dimmer + one climate endpoint with temperature and RH clusters.
 // Climate endpoint advertises the standard Temperature Sensor device type and exposes
 // Relative Humidity Measurement as an additional server cluster on the same endpoint.
@@ -332,6 +332,17 @@ static volatile uint8_t weatherSourceMode = 0; // 0=Auto, 1=Open-Meteo, 2=wttr.i
 static uint32_t weatherOpenMeteoLastAttemptAt = 0;
 static uint32_t weatherWttrLastAttemptAt = 0;
 static uint32_t weatherMetNoLastAttemptAt = 0;
+
+// On-device adaptive agent: persistent provider learning + online climate anomaly model.
+struct HubAIProviderMemory { uint16_t success = 0, failure = 0; uint32_t avgLatencyMs = 0; uint8_t failureStreak = 0; uint32_t lastSuccessAt = 0; };
+static HubAIProviderMemory hubAIProvider[3];
+static uint32_t hubAIEvents = 0;
+static uint32_t hubAIAnomalyCount = 0;
+static uint8_t hubAIAnomalyMask = 0;
+static float hubAITempMean = NAN, hubAIHumidityMean = NAN;
+static float hubAITempVariance = 1.0f, hubAIHumidityVariance = 16.0f;
+static uint16_t hubAISensorSamples = 0;
+static uint32_t hubAILastPersistAt = 0;
 static constexpr uint32_t WEATHER_WTTR_COOLDOWN_MS = 10UL * 60UL * 1000UL;
 static constexpr uint32_t WEATHER_METNO_COOLDOWN_MS = 30UL * 60UL * 1000UL;
 static uint8_t hubTestFpsTarget = 20;
@@ -1096,7 +1107,7 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 </style>
 </head>
 <body><div class="app">
-<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.2 DEV</div></div></div><div class="header-tools"><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
+<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.3 DEV</div></div></div><div class="header-tools"><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
 <div class="grid-main">
 <section class="card hero"><div class="eyebrow">Освещение · ESP32</div><div class="hero-icon" id="heroIcon">💡</div><h1 id="lightState">Загрузка...</h1><div class="hero-description" id="lightDescription">Подключение к устройству</div><div class="dimmer"><div class="dimmer-head"><span>ЯРКОСТЬ</span><strong class="dimmer-value" id="brightnessValue">80%</strong></div><input id="brightnessSlider" type="range" min="1" max="100" value="80" step="1" aria-label="Яркость светодиода"><div class="dimmer-foot"><span>МИНИМУМ</span><span>ПЛАВНОЕ PWM-УПРАВЛЕНИЕ</span><span>100%</span></div></div><div class="dimmer"><div class="dimmer-head"><span>СКОРОСТЬ ЭФФЕКТОВ</span><strong class="dimmer-value" id="speedValue">100%</strong></div><input id="speedSlider" type="range" min="25" max="300" value="100" step="5" aria-label="Скорость эффектов"><div class="dimmer-foot"><span>МЕДЛЕННО</span><span>ТЕМП АНИМАЦИИ</span><span>БЫСТРО</span></div></div><div class="power-actions"><button class="btn btn-primary" onclick="setPower(true)">Включить</button><button class="btn" onclick="setPower(false)">Выключить</button></div></section>
 <section class="card side-status"><div class="section-head"><h2>Устройство</h2><span>LIVE STATUS</span></div><div class="status-item"><div class="status-label">Wi-Fi</div><div class="status-value" id="wifiStatus">—</div></div><div class="status-item"><div class="status-label">IP-адрес</div><div class="status-value" id="ipStatus">—</div></div><div class="status-item"><div class="status-label">Matter</div><div class="status-value" id="matterStatus">—</div></div><div class="status-item"><div class="status-label">Сопряжение</div><div class="status-value" id="commissionStatus">—</div></div></section>
@@ -4778,6 +4789,7 @@ void updateSmartHub() {
       const bool visibleChange = firstSample || isnan(indoorTempC) || isnan(indoorHumidity) ||
         changedAtTenth(t, indoorTempC) || changedAtTenth(h, indoorHumidity);
       indoorHumidity = h; indoorTempC = t; sensorValid = true;
+      hubAIObserveClimate(t, h);
       if (visibleChange) {
         hubSensorDirty = true;
         publishMqttState(); // Push updated climate readings to retained MQTT sensors.
@@ -4990,7 +5002,7 @@ static bool fetchOpenMeteo(WeatherSnapshot &v) {
 
   WiFiClientSecure client;
   HTTPClient https;
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (+https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.3 (+https://github.com/Serg434/Arduino)");
   String url = "https://api.open-meteo.com/v1/forecast?latitude=" + String(WEATHER_LAT, 6) +
     "&longitude=" + String(WEATHER_LON, 6) +
     "&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,uv_index,precipitation,weather_code" +
@@ -5076,7 +5088,7 @@ static bool fetchWttr(WeatherSnapshot &v) {
 
   WiFiClientSecure client;
   HTTPClient https;
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (+https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.3 (+https://github.com/Serg434/Arduino)");
   String url = "https://wttr.in/" + String(WEATHER_LAT, 4) + "," + String(WEATHER_LON, 4) + "?format=j1";
   if (!https.begin(client, url)) {
     LOG_ERR("wttr.in HTTPS begin failed");
@@ -5140,7 +5152,7 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   WiFiClientSecure client;
   HTTPClient https;
   // MET Norway requires a unique identifying User-Agent. The project URL is the identifier.
-  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.2 (https://github.com/Serg434/Arduino)");
+  configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.3 (https://github.com/Serg434/Arduino)");
   const char *responseHeaders[] = { "X-ErrorClass" };
   https.collectHeaders(responseHeaders, 1);
   String url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
@@ -5194,6 +5206,140 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   return !isnan(v.temperature);
 }
 
+
+// ---------------- On-device adaptive intelligence ----------------
+// No cloud inference, remote agent, PC process or server dependency.
+// The policy learns which weather provider is reliable on THIS device and
+// maintains an online statistical baseline for its local climate sensor.
+static void hubAILoadMemory() {
+  Preferences p;
+  if (!p.begin("hubai", true)) return;
+  hubAIEvents = p.getUInt("events", 0);
+  hubAIAnomalyCount = p.getUInt("anoms", 0);
+  hubAISensorSamples = p.getUShort("samples", 0);
+  hubAITempMean = p.getFloat("tmean", NAN);
+  hubAIHumidityMean = p.getFloat("hmean", NAN);
+  hubAITempVariance = p.getFloat("tvar", 1.0f);
+  hubAIHumidityVariance = p.getFloat("hvar", 16.0f);
+  for (uint8_t i = 0; i < 3; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "ok%u", i); hubAIProvider[i].success = p.getUShort(key, 0);
+    snprintf(key, sizeof(key), "bad%u", i); hubAIProvider[i].failure = p.getUShort(key, 0);
+    snprintf(key, sizeof(key), "lat%u", i); hubAIProvider[i].avgLatencyMs = p.getUInt(key, 0);
+    snprintf(key, sizeof(key), "st%u", i); hubAIProvider[i].failureStreak = p.getUChar(key, 0);
+  }
+  p.end();
+  LOG_B("LOCAL AI memory loaded: events=%lu anomalies=%lu climateSamples=%u providers=%u/%u/%u",
+        (unsigned long)hubAIEvents, (unsigned long)hubAIAnomalyCount, hubAISensorSamples,
+        hubAIProvider[0].success, hubAIProvider[1].success, hubAIProvider[2].success);
+}
+
+static void hubAISaveMemory(bool force = false) {
+  const uint32_t now = millis();
+  if (!force && (uint32_t)(now - hubAILastPersistAt) < 10UL * 60UL * 1000UL) return;
+  Preferences p;
+  if (!p.begin("hubai", false)) return;
+  p.putUInt("events", hubAIEvents);
+  p.putUInt("anoms", hubAIAnomalyCount);
+  p.putUShort("samples", hubAISensorSamples);
+  if (!isnan(hubAITempMean)) p.putFloat("tmean", hubAITempMean);
+  if (!isnan(hubAIHumidityMean)) p.putFloat("hmean", hubAIHumidityMean);
+  p.putFloat("tvar", hubAITempVariance);
+  p.putFloat("hvar", hubAIHumidityVariance);
+  for (uint8_t i = 0; i < 3; ++i) {
+    char key[8];
+    snprintf(key, sizeof(key), "ok%u", i); p.putUShort(key, hubAIProvider[i].success);
+    snprintf(key, sizeof(key), "bad%u", i); p.putUShort(key, hubAIProvider[i].failure);
+    snprintf(key, sizeof(key), "lat%u", i); p.putUInt(key, hubAIProvider[i].avgLatencyMs);
+    snprintf(key, sizeof(key), "st%u", i); p.putUChar(key, hubAIProvider[i].failureStreak);
+  }
+  p.end();
+  hubAILastPersistAt = now;
+}
+
+static void hubAIObserveClimate(float temperature, float humidity) {
+  if (!isfinite(temperature) || !isfinite(humidity) ||
+      temperature < -40.0f || temperature > 80.0f || humidity < 0.0f || humidity > 100.0f) {
+    hubAIAnomalyMask |= 0x01;
+    ++hubAIAnomalyCount;
+    LOG_W("LOCAL AI sensor anomaly: implausible sample T=%.1f RH=%.1f", temperature, humidity);
+    return;
+  }
+  if (isnan(hubAITempMean) || isnan(hubAIHumidityMean) || hubAISensorSamples < 4) {
+    if (isnan(hubAITempMean)) hubAITempMean = temperature;
+    if (isnan(hubAIHumidityMean)) hubAIHumidityMean = humidity;
+    hubAITempMean += 0.25f * (temperature - hubAITempMean);
+    hubAIHumidityMean += 0.25f * (humidity - hubAIHumidityMean);
+    ++hubAISensorSamples;
+    return;
+  }
+  const float dt = temperature - hubAITempMean;
+  const float dh = humidity - hubAIHumidityMean;
+  const float tempLimit = max(4.0f, 4.5f * sqrtf(max(0.05f, hubAITempVariance)));
+  const float humLimit = max(18.0f, 4.5f * sqrtf(max(1.0f, hubAIHumidityVariance)));
+  uint8_t flags = 0;
+  if (fabsf(dt) > tempLimit) flags |= 0x02;
+  if (fabsf(dh) > humLimit) flags |= 0x04;
+  hubAIAnomalyMask = flags;
+  if (flags) {
+    ++hubAIAnomalyCount;
+    LOG_W("LOCAL AI climate anomaly flags=0x%02X deltaT=%.1f deltaRH=%.1f", flags, dt, dh);
+  } else {
+    hubAITempMean += 0.08f * dt;
+    hubAIHumidityMean += 0.08f * dh;
+    hubAITempVariance = 0.92f * hubAITempVariance + 0.08f * dt * (temperature - hubAITempMean);
+    hubAIHumidityVariance = 0.92f * hubAIHumidityVariance + 0.08f * dh * (humidity - hubAIHumidityMean);
+    if (hubAITempVariance < 0.05f) hubAITempVariance = 0.05f;
+    if (hubAIHumidityVariance < 1.0f) hubAIHumidityVariance = 1.0f;
+  }
+  if (hubAISensorSamples < 65535) ++hubAISensorSamples;
+  hubAISaveMemory(false);
+}
+
+static bool hubAIProviderCoolingDown(uint8_t id, uint32_t now) {
+  if (id == 0) return weatherOpenMeteoLastAttemptAt && (uint32_t)(now - weatherOpenMeteoLastAttemptAt) < 60000UL;
+  if (id == 1) return weatherWttrLastAttemptAt && (uint32_t)(now - weatherWttrLastAttemptAt) < WEATHER_WTTR_COOLDOWN_MS;
+  if (id == 2) return weatherMetNoLastAttemptAt && (uint32_t)(now - weatherMetNoLastAttemptAt) < WEATHER_METNO_COOLDOWN_MS;
+  return true;
+}
+
+static uint8_t hubAIChooseWeatherProvider(uint8_t attemptedMask) {
+  uint32_t total = 0;
+  for (uint8_t i = 0; i < 3; ++i) total += hubAIProvider[i].success + hubAIProvider[i].failure;
+  const uint32_t now = millis();
+  float bestScore = -1000.0f;
+  uint8_t best = 255;
+  for (uint8_t i = 0; i < 3; ++i) {
+    if ((attemptedMask & (1U << i)) || hubAIProviderCoolingDown(i, now)) continue;
+    const HubAIProviderMemory &m = hubAIProvider[i];
+    const uint32_t n = (uint32_t)m.success + m.failure;
+    const float reliability = (m.success + 1.0f) / (n + 2.0f);
+    const float exploration = 0.42f * sqrtf(logf(total + 2.0f) / (n + 1.0f));
+    const float latencyPenalty = m.avgLatencyMs ? min(0.22f, m.avgLatencyMs / 60000.0f) : 0.0f;
+    const float streakPenalty = min(0.45f, m.failureStreak * 0.09f);
+    const float score = reliability + exploration - latencyPenalty - streakPenalty;
+    if (score > bestScore) { bestScore = score; best = i; }
+  }
+  return best;
+}
+
+static void hubAIRecordWeather(uint8_t id, bool success, uint32_t latencyMs) {
+  if (id >= 3) return;
+  HubAIProviderMemory &m = hubAIProvider[id];
+  if (success) {
+    if (m.success < 65000) ++m.success;
+    m.failureStreak = 0; m.lastSuccessAt = millis();
+  } else {
+    if (m.failure < 65000) ++m.failure;
+    if (m.failureStreak < 10) ++m.failureStreak;
+  }
+  m.avgLatencyMs = m.avgLatencyMs ? (m.avgLatencyMs * 7UL + latencyMs) / 8UL : latencyMs;
+  ++hubAIEvents;
+  LOG_B("LOCAL AI weather learning: provider=%u result=%s latency=%lu ms ok=%u fail=%u",
+        id, success ? "SUCCESS" : "FAIL", (unsigned long)latencyMs, m.success, m.failure);
+  hubAISaveMemory(success);
+}
+
 void weatherTask(void *parameter){
   (void)parameter;
   for(;;){
@@ -5203,23 +5349,31 @@ void weatherTask(void *parameter){
       const uint8_t mode=weatherSourceMode;
       bool ok=false;
       WeatherSnapshot snapshot;
-      if(mode==0){
-        setWeatherText("Запрос Open-Meteo");
-        if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
-        if(!ok){setWeatherText("Резерв: wttr.in");LOG_W("Open-Meteo unavailable; trying wttr.in");if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");}
-        if(!ok){setWeatherText("Резерв: MET Norway");LOG_W("wttr.in unavailable; trying MET Norway");if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");}
-      }else if(mode==1){
-        setWeatherText("Запрос Open-Meteo");
-        if(fetchOpenMeteo(snapshot))ok=applyWeatherSnapshot(snapshot,"Open-Meteo");
-      }else if(mode==2){
-        setWeatherText("Запрос wttr.in");
-        if(fetchWttr(snapshot))ok=applyWeatherSnapshot(snapshot,"wttr.in");
-      }else if(mode==3){
-        setWeatherText("Запрос MET Norway");
-        if(fetchMetNo(snapshot))ok=applyWeatherSnapshot(snapshot,"MET Norway");
+      static const char *providerNames[3] = {"Open-Meteo","wttr.in","MET Norway"};
+      if (mode == 0) {
+        // Rank providers by learned reliability and latency; skip active cooldowns.
+        uint8_t attempted = 0;
+        for (uint8_t attempt = 0; attempt < 3; ++attempt) {
+          const uint8_t id = hubAIChooseWeatherProvider(attempted);
+          if (id >= 3) break;
+          attempted |= (uint8_t)(1U << id);
+          setWeatherText("LOCAL AI", providerNames[id]);
+          const uint32_t started = millis();
+          const bool fetched = id == 0 ? fetchOpenMeteo(snapshot) : (id == 1 ? fetchWttr(snapshot) : fetchMetNo(snapshot));
+          const bool valid = fetched && applyWeatherSnapshot(snapshot, providerNames[id]);
+          hubAIRecordWeather(id, valid, millis() - started);
+          if (valid) { ok = true; break; }
+          LOG_W("LOCAL AI: %s failed validation; trying next learned candidate", providerNames[id]);
+        }
+      } else {
+        const uint8_t id = (uint8_t)(mode - 1);
+        const uint32_t started = millis();
+        const bool fetched = id == 0 ? fetchOpenMeteo(snapshot) : (id == 1 ? fetchWttr(snapshot) : fetchMetNo(snapshot));
+        ok = fetched && applyWeatherSnapshot(snapshot, providerNames[id]);
+        hubAIRecordWeather(id, ok, millis() - started);
       }
-      if(ok)nextDelay=WEATHER_INTERVAL_MS;
-      else{setWeatherText("Нет данных · источник недоступен");nextDelay=60000UL;LOG_ERR("Weather request failed; mode=%u",mode);}
+      if (ok) nextDelay=WEATHER_INTERVAL_MS;
+      else { setWeatherText("Нет данных · LOCAL AI ищет резерв"); nextDelay=60000UL; LOG_ERR("LOCAL AI weather cycle failed; mode=%u",mode); }
     }
     // Web request interrupts the wait and starts the next refresh immediately.
     ulTaskNotifyTake(pdTRUE,pdMS_TO_TICKS(nextDelay));
@@ -5363,7 +5517,7 @@ void setup() {
   Serial.begin(115200);
   delay(500);
   Serial.println();
-  Serial.println("[BOOT] GoodWin Smart Hub v3.11.2-dev - Serial console ready @115200");
+  Serial.println("[BOOT] GoodWin Smart Hub v3.11.3-dev - Serial console ready @115200");
   Serial.flush();
   previousEspLogVprintf = esp_log_set_vprintf(webEspLogVprintf);
   LOG_B("GoodWin Smart Hub booting");
@@ -5387,6 +5541,7 @@ void setup() {
   displayBrightnessPercent = statePrefs.getUChar("dispBri", 85);
   if (displayBrightnessPercent < 1 || displayBrightnessPercent > 100) displayBrightnessPercent = 85;
   statePrefs.end();
+  hubAILoadMemory();
   writeDisplayBacklight();
   hubLastActivityAt = millis();
   LOG_B("TFT state: enabled=%s, brightness=%u%%, rotation=%u, dimensions=%dx%d, renderer=%s",
