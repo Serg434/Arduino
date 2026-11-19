@@ -222,6 +222,8 @@ static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
 // Shared off-screen animation canvas: DNA, wave and aurora are composed off-screen
 // and transferred as one image to avoid visible clear-then-redraw flicker.
 static GFXcanvas16 *hubSaverCanvas = nullptr;
+static int16_t hubSaverCanvasW = 0;
+static int16_t hubSaverCanvasH = 0;
 static volatile bool hubDisplayDirty = true; // full redraw: boot, layout or structural change
 static volatile bool hubClockDirty = false;
 static volatile bool hubSensorDirty = false;
@@ -3306,78 +3308,88 @@ void hubMarkActivity() {
 static void hubInvalidateValueCache();
 
 static void initHubScreenSaver() {
-  const int16_t w = hubTFT.width(), h = hubTFT.height();
-  if ((hubSaverId == 8 || hubSaverId == 10 || hubSaverId == 11) && !hubSaverCanvas) {
-    hubSaverCanvas = new GFXcanvas16(128, 117);
-    if (!hubSaverCanvas || !hubSaverCanvas->getBuffer()) {
-      delete hubSaverCanvas;
-      hubSaverCanvas = nullptr;
-      LOG_ERR("Saver off-screen canvas allocation failed; heap=%u", ESP.getFreeHeap());
-    } else {
-      LOG_B("Saver off-screen canvas ready: 128x117, %u bytes; free heap=%u",
-            (unsigned)(128U * 117U * sizeof(uint16_t)), ESP.getFreeHeap());
+  const int16_t w = hubTFT.width();
+  const int16_t h = hubTFT.height();
+  const int16_t bandTop = 25;
+  const int16_t bandHeight = h - 43;
+
+  // One shared RGB565 scene buffer is used by every animated saver. The
+  // visible animation area is composed completely off-screen and transferred
+  // in one DMA operation, so no saver exposes an erase-then-redraw sequence.
+  if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != bandHeight) {
+    delete hubSaverCanvas;
+    hubSaverCanvas = nullptr;
+    hubSaverCanvasW = 0;
+    hubSaverCanvasH = 0;
+    if (w > 0 && bandHeight > 0) {
+      hubSaverCanvas = new GFXcanvas16(w, bandHeight);
+      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
+        hubSaverCanvasW = w;
+        hubSaverCanvasH = bandHeight;
+        LOG_B("Unified saver canvas ready: %dx%d, %u bytes; free heap=%u",
+              w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap());
+      } else {
+        delete hubSaverCanvas;
+        hubSaverCanvas = nullptr;
+        LOG_ERR("Unified saver canvas allocation failed; heap=%u", ESP.getFreeHeap());
+      }
     }
   }
+
   hubInvalidateValueCache();
   hubTFT.fillScreen(HUB_BG);
-  saverDotX = w / 3; saverDotY = h / 3; saverDotVX = 2; saverDotVY = 1; saverDotRadius = 5;
-  saverPulseRadius = 18; saverPulseDirection = 1;
-  saverCloudX[0] = -36; saverCloudX[1] = w / 2;
-  hubSaverLastValueAt = 0; saverLastTemperature = NAN; saverLastHumidity = NAN;
+
+  // Shared frame chrome: the same title, divider and footer are used by every
+  // saver. The animation canvas begins below the header and ends above footer.
+  static const char *SAVER_TITLES[12] = {
+    "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW",
+    "CLOUDS", "INDOOR CLIMATE", "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX"
+  };
+  hubTFT.setTextSize(1);
+  hubTFT.setTextColor(HUB_CYAN, HUB_BG);
+  hubTFT.setCursor(7, 7);
+  hubTFT.print(SAVER_TITLES[hubSaverId < 12 ? hubSaverId : 0]);
+  hubTFT.drawFastHLine(7, 19, w - 14, HUB_LINE);
+  hubTFT.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
+  hubTFT.setTextColor(HUB_MUTED, HUB_BG);
+  hubTFT.setCursor(7, h - 11);
+  hubTFT.print("GOODWIN  /  ESP32");
+
+  saverDotX = w / 3;
+  saverDotY = max(12, bandHeight / 3);
+  saverDotVX = 2;
+  saverDotVY = 1;
+  saverDotRadius = 5;
+  saverPulseRadius = 12;
+  saverPulseDirection = 1;
+  saverCloudX[0] = -36;
+  saverCloudX[1] = w / 2;
+  hubSaverLastValueAt = 0;
+  saverLastTemperature = NAN;
+  saverLastHumidity = NAN;
+
   for (uint8_t i = 0; i < 18; ++i) {
-    saverStarX[i] = random(2, max(3, (int)w - 2));
-    saverStarY[i] = random(20, max(21, (int)h - 3));
+    saverStarX[i] = (uint8_t)random(3, max(4, (int)w - 3));
+    saverStarY[i] = (uint8_t)random(3, max(4, (int)bandHeight - 3));
     saverStarPhase[i] = random(0, 2);
-    if (hubSaverId == 3) hubTFT.drawPixel(saverStarX[i], saverStarY[i], saverStarPhase[i] ? HUB_CYAN : HUB_MUTED);
   }
   for (uint8_t i = 0; i < 10; ++i) {
-    saverRainX[i] = random(2, max(3, (int)w - 2)); saverRainY[i] = random(18, max(19, (int)h - 1));
-    saverSnowX[i] = random(2, max(3, (int)w - 2)); saverSnowY[i] = random(18, max(19, (int)h - 1));
+    saverRainX[i] = (uint8_t)random(3, max(4, (int)w - 3));
+    saverRainY[i] = (uint8_t)random(2, max(3, (int)bandHeight - 2));
+    saverSnowX[i] = (uint8_t)random(3, max(4, (int)w - 3));
+    saverSnowY[i] = (uint8_t)random(2, max(3, (int)bandHeight - 2));
   }
-  if (hubSaverId == 1) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor((w - 42) / 2, h / 2 - 25); hubTFT.print("GOODWIN");
-    hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG);
-    hubTFT.setCursor((w - 60) / 2, h / 2 - 3); hubTFT.print(timeText);
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG);
-    hubTFT.setCursor((w - 48) / 2, h / 2 + 22); hubTFT.print(dateText.substring(0, 5));
-  } else if (hubSaverId == 2) {
-    hubTFT.drawRoundRect(5, 5, w - 10, h - 10, 8, HUB_LINE);
-    hubTFT.fillCircle(saverDotX, saverDotY, saverDotRadius, HUB_CYAN);
-  } else if (hubSaverId == 3) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("STARS");
-  } else if (hubSaverId == 4) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("RAIN");
-  } else if (hubSaverId == 5) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("SNOW");
-  } else if (hubSaverId == 6) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("CLOUDS");
-  } else if (hubSaverId == 7) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor((w - 54) / 2, 17); hubTFT.print("INDOOR CLIMATE");
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED, HUB_BG);
-    hubTFT.setCursor((w - 42) / 2, h / 2 + 22); hubTFT.print("TEMPERATURE");
-    hubTFT.setCursor((w - 42) / 2, h / 2 + 47); hubTFT.print("HUMIDITY");
-  } else if (hubSaverId == 8) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("WAVE");
-  } else if (hubSaverId == 9) {
-    hubTFT.drawCircle(w / 2, h / 2, 40, HUB_LINE);
-    hubTFT.drawCircle(w / 2, h / 2, 34, HUB_LINE);
-    hubTFT.fillCircle(w / 2, h / 2, saverPulseRadius, HUB_CYAN);
-  } else if (hubSaverId == 10) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("AURORA");
-  } else if (hubSaverId == 11) {
-    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN, HUB_BG);
-    hubTFT.setCursor(7, 7); hubTFT.print("GOODWIN  /  DNA");
-    hubTFT.drawFastHLine(7, 19, w - 14, HUB_LINE);
-    hubTFT.setTextColor(HUB_MUTED, HUB_BG); hubTFT.setCursor(7, h - 11); hubTFT.print("DOUBLE HELIX  ·  ESP32");
-  }
+}
+
+static void drawSaverCanvasBackdrop(GFXcanvas16 &cv, int16_t w, int16_t h) {
+  // Identical base for DNA, aurora and every other effect: deep navy, a
+  // restrained technical grid and fine edge rails. No effect paints its own
+  // differently-coloured rectangle anymore.
+  cv.fillScreen(HUB_BG);
+  for (int16_t y = 12; y < h; y += 18) cv.drawFastHLine(4, y, w - 8, 0x1082);
+  for (int16_t x = 16; x < w; x += 32) cv.drawFastVLine(x, 4, h - 8, 0x0C83);
+  cv.drawFastVLine(3, 4, h - 8, 0x10A4);
+  cv.drawFastVLine(w - 4, 4, h - 8, 0x10A4);
 }
 
 static void drawHubScreenSaverFrame() {
@@ -3385,216 +3397,237 @@ static void drawHubScreenSaverFrame() {
   static uint32_t diagFrames = 0;
   static uint32_t diagTotalUs = 0;
   static uint32_t diagMaxUs = 0;
+  static bool allocationWarningShown = false;
   const uint32_t frameStartedUs = micros();
-  const int16_t w = hubTFT.width(), h = hubTFT.height();
+
+  if (!hubSaverCanvas || !hubSaverCanvas->getBuffer()) {
+    if (!allocationWarningShown) {
+      allocationWarningShown = true;
+      LOG_ERR("Screen saver paused: shared RGB565 canvas is unavailable");
+    }
+    return;
+  }
+
+  GFXcanvas16 &cv = *hubSaverCanvas;
+  const int16_t w = hubSaverCanvasW;
+  const int16_t h = hubSaverCanvasH;
+  const uint32_t now = millis();
+  const float phase = now * 0.0011f;
+  bool presentFrame = true;
+
+  drawSaverCanvasBackdrop(cv, w, h);
+
   switch (hubSaverId) {
-    case 1: // Clock: only the changing text region is touched.
-      if (millis() - hubSaverLastValueAt >= 1000) {
-        hubSaverLastValueAt = millis();
-        hubTFT.fillRect(5, h / 2 - 5, w - 10, 25, HUB_BG);
-        hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE, HUB_BG);
-        hubTFT.setCursor((w - 60) / 2, h / 2 - 3); hubTFT.print(timeText);
+    case 1: { // Minimal digital clock, refreshed only when the second changes.
+      if ((uint32_t)(now - hubSaverLastValueAt) < 1000UL) {
+        presentFrame = false;
+        break;
       }
+      hubSaverLastValueAt = now;
+      cv.setTextSize(2);
+      cv.setTextColor(HUB_WHITE);
+      cv.setCursor((w - 60) / 2, h / 2 - 13);
+      cv.print(timeText);
+      cv.setTextSize(1);
+      cv.setTextColor(HUB_MUTED);
+      cv.setCursor((w - 48) / 2, h / 2 + 12);
+      cv.print(dateText.substring(0, 5));
       break;
-    case 2: // Floating dot.
-      hubTFT.fillCircle(saverDotX, saverDotY, saverDotRadius + 1, HUB_BG);
-      // The erase can overlap the decorative frame when the dot reaches an edge.
-      // Restore the frame before drawing the next dot position.
-      hubTFT.drawRoundRect(5, 5, w - 10, h - 10, 8, HUB_LINE);
-      saverDotX += saverDotVX; saverDotY += saverDotVY;
+    }
+
+    case 2: { // Orbit dot, with its frame composed atomically.
+      cv.drawRoundRect(5, 5, w - 10, h - 10, 8, HUB_LINE);
+      cv.drawCircle(w / 2, h / 2, 18, 0x2149);
+      cv.fillCircle(saverDotX, saverDotY, saverDotRadius, HUB_CYAN);
+      saverDotX += saverDotVX;
+      saverDotY += saverDotVY;
       if (saverDotX < saverDotRadius + 7 || saverDotX > w - saverDotRadius - 7) saverDotVX = -saverDotVX;
       if (saverDotY < saverDotRadius + 7 || saverDotY > h - saverDotRadius - 7) saverDotVY = -saverDotVY;
       saverDotX = constrain(saverDotX, (int16_t)(saverDotRadius + 7), (int16_t)(w - saverDotRadius - 7));
       saverDotY = constrain(saverDotY, (int16_t)(saverDotRadius + 7), (int16_t)(h - saverDotRadius - 7));
-      hubTFT.fillCircle(saverDotX, saverDotY, saverDotRadius, HUB_CYAN);
-      break;
-    case 3: { // Stars: twinkle one pixel, no screen redraw.
-      uint8_t i = random(0, 18); saverStarPhase[i] ^= 1;
-      hubTFT.drawPixel(saverStarX[i], saverStarY[i], saverStarPhase[i] ? HUB_WHITE : HUB_BG);
       break;
     }
-    case 4: // Rain: erase and advance each drop.
+
+    case 3: { // Stars: stable backdrop, independently twinkling stars.
+      const uint8_t changed = random(0, 18);
+      saverStarPhase[changed] ^= 1;
+      for (uint8_t i = 0; i < 18; ++i) {
+        const uint16_t c = saverStarPhase[i] ? HUB_WHITE : (i % 3 ? HUB_MUTED : HUB_CYAN);
+        cv.drawPixel(saverStarX[i], saverStarY[i], c);
+        if (saverStarPhase[i] && (i % 4 == 0)) cv.drawPixel(saverStarX[i] + 1, saverStarY[i], HUB_CYAN);
+      }
+      break;
+    }
+
+    case 4: { // Rain: drops are redrawn into the scene buffer, never erased on TFT.
       for (uint8_t i = 0; i < 10; ++i) {
-        hubTFT.drawFastVLine(saverRainX[i], saverRainY[i], 4, HUB_BG);
+        cv.drawFastVLine(saverRainX[i], saverRainY[i], 5, (i % 3) ? HUB_CYAN : HUB_WHITE);
         saverRainY[i] = (uint8_t)(saverRainY[i] + 5);
-        if (saverRainY[i] > h - 5) { saverRainY[i] = random(18, 28); saverRainX[i] = random(2, max(3, (int)w - 2)); }
-        hubTFT.drawFastVLine(saverRainX[i], saverRainY[i], 4, HUB_CYAN);
+        if (saverRainY[i] > h - 6) {
+          saverRainY[i] = random(2, 18);
+          saverRainX[i] = random(3, max(4, (int)w - 3));
+        }
       }
       break;
-    case 5: // Snow: erase and advance each flake.
+    }
+
+    case 5: { // Snow: subtle flakes with varied speed and brightness.
       for (uint8_t i = 0; i < 10; ++i) {
-        hubTFT.drawPixel(saverSnowX[i], saverSnowY[i], HUB_BG);
+        cv.drawPixel(saverSnowX[i], saverSnowY[i], (i % 3) ? HUB_WHITE : HUB_CYAN);
+        if ((i & 1) == 0) cv.drawPixel(saverSnowX[i] + 1, saverSnowY[i], HUB_MUTED);
         saverSnowY[i] = (uint8_t)(saverSnowY[i] + 1 + (i % 2));
-        if (saverSnowY[i] > h - 2) { saverSnowY[i] = 18; saverSnowX[i] = random(2, max(3, (int)w - 2)); }
-        hubTFT.drawPixel(saverSnowX[i], saverSnowY[i], HUB_WHITE);
+        if (saverSnowY[i] > h - 3) {
+          saverSnowY[i] = 2;
+          saverSnowX[i] = random(3, max(4, (int)w - 3));
+        }
       }
       break;
-    case 6: // Clouds: move a compact cloud shape across the screen.
+    }
+
+    case 6: { // Clouds: two soft silhouettes drifting across the common backdrop.
       for (uint8_t i = 0; i < 2; ++i) {
         const int16_t y = h / 2 - 12 + i * 28;
-        // Cloud silhouette reaches y-15 at its crown; erase the complete previous bounds.
-        hubTFT.fillRect(saverCloudX[i] - 3, y - 16, 45, 32, HUB_BG);
+        const int16_t x = saverCloudX[i];
+        const uint16_t c = i ? 0x5DDF : 0xCE7F;
+        cv.fillCircle(x + 10, y, 7, c);
+        cv.fillCircle(x + 20, y - 5, 10, c);
+        cv.fillCircle(x + 31, y, 7, c);
+        cv.fillRoundRect(x + 7, y, 28, 8, 4, c);
         saverCloudX[i] += (i == 0 ? 1 : 2);
         if (saverCloudX[i] > w + 5) saverCloudX[i] = -42;
-        int16_t x = saverCloudX[i];
-        hubTFT.fillCircle(x + 10, y, 7, i ? HUB_CYAN : HUB_WHITE);
-        hubTFT.fillCircle(x + 20, y - 5, 10, i ? HUB_CYAN : HUB_WHITE);
-        hubTFT.fillCircle(x + 31, y, 7, i ? HUB_CYAN : HUB_WHITE);
-        hubTFT.fillRoundRect(x + 7, y, 28, 8, 4, i ? HUB_CYAN : HUB_WHITE);
-      }
-      break;
-    case 7: // Climate: update only values when the DHT22 values change.
-      if (millis() - hubSaverLastValueAt >= 1000 || changedAtTenth(indoorTempC, saverLastTemperature) || changedAtTenth(indoorHumidity, saverLastHumidity)) {
-        hubSaverLastValueAt = millis(); saverLastTemperature = indoorTempC; saverLastHumidity = indoorHumidity;
-        char value[20];
-        snprintf(value, sizeof(value), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
-        drawValueBox((w - 86) / 2, h / 2 - 15, 86, 19, HUB_BG, HUB_WHITE, 2, value);
-        snprintf(value, sizeof(value), sensorValid ? "%.1f %%" : "--.- %%", sensorValid ? indoorHumidity : 0.0f);
-        drawValueBox((w - 86) / 2, h / 2 + 10, 86, 19, HUB_BG, HUB_CYAN, 2, value);
-      }
-      break;
-    case 8: { // Wave: compose off-screen and transfer the band as one image.
-      const int16_t mid = h / 2;
-      const int16_t bandTop = mid - 23;
-      const float phase = millis() * 0.004f;
-      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
-        hubSaverCanvas->fillScreen(HUB_BG);
-        for (int16_t x = 0; x < w - 1; ++x) {
-          int16_t y1 = 23 + (int16_t)(sinf((x * 0.09f) + phase) * 15.0f);
-          int16_t y2 = 23 + (int16_t)(sinf(((x + 1) * 0.09f) + phase) * 15.0f);
-          hubSaverCanvas->drawLine(x, y1, x + 1, y2, HUB_CYAN);
-        }
-        hubTFT.pushImage(0, bandTop, 128, 47, hubSaverCanvas->getBuffer());
-        hubTFT.waitDMA();
-      } else {
-        hubTFT.fillRect(0, bandTop, w, 47, HUB_BG);
-        for (int16_t x = 0; x < w - 1; ++x) {
-          int16_t y1 = mid + (int16_t)(sinf((x * 0.09f) + phase) * 15.0f);
-          int16_t y2 = mid + (int16_t)(sinf(((x + 1) * 0.09f) + phase) * 15.0f);
-          hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
-        }
       }
       break;
     }
-    case 9: { // Pulse: erase only the previous filled circle and draw the next one.
+
+    case 7: { // Climate card: values update once per second, no flashing text box.
+      if ((uint32_t)(now - hubSaverLastValueAt) < 1000UL &&
+          !changedAtTenth(indoorTempC, saverLastTemperature) &&
+          !changedAtTenth(indoorHumidity, saverLastHumidity)) {
+        presentFrame = false;
+        break;
+      }
+      hubSaverLastValueAt = now;
+      saverLastTemperature = indoorTempC;
+      saverLastHumidity = indoorHumidity;
+      cv.drawRoundRect(8, h / 2 - 32, w - 16, 64, 8, HUB_LINE);
+      cv.setTextSize(1);
+      cv.setTextColor(HUB_CYAN);
+      cv.setCursor(17, h / 2 - 21);
+      cv.print("TEMPERATURE");
+      cv.setTextColor(HUB_MUTED);
+      cv.setCursor(w - 53, h / 2 - 21);
+      cv.print("HUMIDITY");
+      char value[20];
+      snprintf(value, sizeof(value), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
+      cv.setTextSize(2);
+      cv.setTextColor(HUB_WHITE);
+      cv.setCursor(15, h / 2 - 2);
+      cv.print(value);
+      snprintf(value, sizeof(value), sensorValid ? "%.0f%%" : "--%%", sensorValid ? indoorHumidity : 0.0f);
+      cv.setTextColor(HUB_CYAN);
+      cv.setCursor(w - 55, h / 2 - 2);
+      cv.print(value);
+      break;
+    }
+
+    case 8: { // Wave: three layered ribbons, one complete scene transfer.
+      for (int16_t x = 0; x < w - 1; ++x) {
+        const int16_t y1 = h / 2 + (int16_t)(sinf(x * 0.075f + phase) * 17.0f);
+        const int16_t y2 = h / 2 + (int16_t)(sinf((x + 1) * 0.075f + phase) * 17.0f);
+        const int16_t g1 = h / 2 + 8 + (int16_t)(sinf(x * 0.055f - phase * 0.8f) * 12.0f);
+        const int16_t g2 = h / 2 + 8 + (int16_t)(sinf((x + 1) * 0.055f - phase * 0.8f) * 12.0f);
+        const int16_t b1 = h / 2 - 8 + (int16_t)(sinf(x * 0.095f + phase * 0.7f) * 9.0f);
+        const int16_t b2 = h / 2 - 8 + (int16_t)(sinf((x + 1) * 0.095f + phase * 0.7f) * 9.0f);
+        cv.drawLine(x, y1, x + 1, y2, HUB_CYAN);
+        cv.drawLine(x, g1, x + 1, g2, HUB_GREEN);
+        cv.drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+      }
+      break;
+    }
+
+    case 9: { // Pulse: nested rings and a breathing luminous core.
       const int16_t cx = w / 2, cy = h / 2;
-      hubTFT.fillCircle(cx, cy, saverPulseRadius, HUB_BG);
-      // The pulse overlaps the decorative rings; restore them after erasing the old disk.
-      hubTFT.drawCircle(cx, cy, 40, HUB_LINE);
-      hubTFT.drawCircle(cx, cy, 34, HUB_LINE);
+      cv.drawCircle(cx, cy, 43, 0x2149);
+      cv.drawCircle(cx, cy, 35, HUB_LINE);
+      cv.drawCircle(cx, cy, 27, 0x31AE);
+      cv.fillCircle(cx, cy, saverPulseRadius, HUB_CYAN);
+      cv.fillCircle(cx, cy, max(3, (int)saverPulseRadius / 2), HUB_WHITE);
       saverPulseRadius = (uint8_t)(saverPulseRadius + saverPulseDirection * 2);
-      if (saverPulseRadius >= 34) { saverPulseRadius = 34; saverPulseDirection = -1; }
-      if (saverPulseRadius <= 12) { saverPulseRadius = 12; saverPulseDirection = 1; }
-      hubTFT.fillCircle(cx, cy, saverPulseRadius, HUB_CYAN);
+      if (saverPulseRadius >= 32) { saverPulseRadius = 32; saverPulseDirection = -1; }
+      if (saverPulseRadius <= 10) { saverPulseRadius = 10; saverPulseDirection = 1; }
       break;
     }
-    case 11: { // DNA: off-screen 3D double helix; one atomic transfer per frame.
-      const uint32_t frame = millis();
-      const int16_t top = 25, bottom = h - 18;
-      const float phase = frame * 0.0011f;
-      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
-        GFXcanvas16 &cv = *hubSaverCanvas;
-        cv.fillScreen(HUB_BG);
-        for (int16_t y = 8; y < bottom - top; y += 18) cv.drawFastHLine(2, y, 124, 0x1082);
-        const int16_t scanY = (int16_t)((frame / 90U) % (bottom - top));
-        cv.drawFastHLine(2, scanY, 124, 0x2127);
-        int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
-        for (int16_t y = 5; y < (bottom - top) - 3; y += 3) {
-          const float t = (float)(y - 5) * 0.105f + phase;
-          const float wave = sinf(t);
-          const float depth = cosf(t);
-          const int16_t spread = 20 + (int16_t)(depth * 3.0f);
-          const int16_t ax = w / 2 + (int16_t)(wave * spread);
-          const int16_t bx = w / 2 - (int16_t)(wave * spread);
-          const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF;
-          const uint16_t cb = depth > 0 ? HUB_CYAN : 0xF81F;
-          if (y > 5) {
-            if (((y + top) % 10) == 0) cv.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
-            cv.drawLine(prevAx, prevAy, ax, y, ca);
-            cv.drawLine(prevBx, prevBy, bx, y, cb);
-          }
-          if (((y + top) % 10) == 0) {
-            const uint8_t r = depth > 0.55f ? 3 : 2;
-            cv.fillCircle(ax, y, r, ca);
-            cv.fillCircle(bx, y, r, cb);
-            cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
-            cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
-          }
-          prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
-        }
-        for (uint8_t i = 0; i < 4; ++i) {
-          const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
-          const int16_t x = w / 2 + (int16_t)(sinf(p) * (31.0f + (i % 3) * 4.0f));
-          const int16_t y = 10 + (int16_t)((((frame / (22U + i * 3U)) + i * 19U) % (uint32_t)(bottom - top - 18)));
-          cv.drawPixel(x, y, (i & 1) ? HUB_CYAN : HUB_YELLOW);
-          if ((i % 3) == 0) cv.drawPixel(x + 1, y, HUB_WHITE);
-        }
-        hubTFT.pushImage(0, top, 128, bottom - top, cv.getBuffer());
-        hubTFT.waitDMA();
-      } else {
-        // Low-memory fallback: preserve animation if the optional canvas cannot be allocated.
-        hubTFT.fillRect(18, top, w - 36, bottom - top, HUB_BG);
-        for (int16_t y = top + 8; y < bottom; y += 18) hubTFT.drawFastHLine(20, y, w - 40, 0x1082);
-        const int16_t scanY = top + (int16_t)((frame / 90U) % (bottom - top));
-        hubTFT.drawFastHLine(20, scanY, w - 40, 0x2127);
-        int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
-        for (int16_t y = top + 5; y < bottom - 3; y += 3) {
-          const float t = (float)(y - top) * 0.105f + phase;
-          const float wave = sinf(t), depth = cosf(t);
-          const int16_t spread = 20 + (int16_t)(depth * 3.0f);
-          const int16_t ax = w / 2 + (int16_t)(wave * spread), bx = w / 2 - (int16_t)(wave * spread);
-          const uint16_t ca = depth > 0 ? HUB_CYAN : 0x05BF, cb = depth > 0 ? HUB_CYAN : 0xF81F;
-          if (y > top + 5) {
-            if ((y % 10) == 0) hubTFT.drawLine(prevAx, prevAy, prevBx, prevBy, 0x7BEF);
-            hubTFT.drawLine(prevAx, prevAy, ax, y, ca); hubTFT.drawLine(prevBx, prevBy, bx, y, cb);
-          }
-          if ((y % 10) == 0) {
-            const uint8_t r = depth > 0.55f ? 3 : 2;
-            hubTFT.fillCircle(ax, y, r, ca); hubTFT.fillCircle(bx, y, r, cb);
-            hubTFT.drawPixel(ax - 1, y - 1, HUB_WHITE); hubTFT.drawPixel(bx - 1, y - 1, HUB_WHITE);
-          }
-          prevAx = ax; prevAy = y; prevBx = bx; prevBy = y;
-        }
+
+    case 10: { // Aurora: layered flowing curtains on the exact same base as DNA.
+      for (int16_t x = 0; x < w - 1; ++x) {
+        const int16_t y1 = h / 2 - 8 + (int16_t)(sinf(x * 0.052f + phase * 1.2f) * 21.0f);
+        const int16_t y2 = h / 2 - 8 + (int16_t)(sinf((x + 1) * 0.052f + phase * 1.2f) * 21.0f);
+        const int16_t g1 = h / 2 + 5 + (int16_t)(sinf(x * 0.041f - phase * 0.75f) * 16.0f);
+        const int16_t g2 = h / 2 + 5 + (int16_t)(sinf((x + 1) * 0.041f - phase * 0.75f) * 16.0f);
+        const int16_t b1 = h / 2 - 17 + (int16_t)(sinf(x * 0.071f + phase * 0.62f) * 12.0f);
+        const int16_t b2 = h / 2 - 17 + (int16_t)(sinf((x + 1) * 0.071f + phase * 0.62f) * 12.0f);
+        cv.drawLine(x, y1, x + 1, y2, HUB_CYAN);
+        cv.drawLine(x, g1, x + 1, g2, HUB_GREEN);
+        cv.drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+      }
+      for (uint8_t i = 0; i < 8; ++i) {
+        const int16_t sx = (int16_t)((i * 19U + now / 17U) % (uint32_t)w);
+        const int16_t sy = 8 + (int16_t)((i * 13U + now / 31U) % (uint32_t)max(1, h - 16));
+        cv.drawPixel(sx, sy, (i & 1) ? HUB_WHITE : HUB_CYAN);
       }
       break;
     }
-    case 10: { // Aurora: off-screen composition; old lines are never left behind.
-      const int16_t mid = h / 2;
-      const int16_t bandTop = mid - 27;
-      const float phase = millis() * 0.0025f;
-      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
-        hubSaverCanvas->fillScreen(HUB_BG);
-        for (int16_t x = 0; x < w - 1; ++x) {
-          const int16_t y1 = 27 + (int16_t)(sinf(x * 0.055f + phase) * 19.0f);
-          const int16_t y2 = 27 + (int16_t)(sinf((x + 1) * 0.055f + phase) * 19.0f);
-          const int16_t g1 = 34 + (int16_t)(sinf(x * 0.045f - phase * 0.8f) * 13.0f);
-          const int16_t g2 = 34 + (int16_t)(sinf((x + 1) * 0.045f - phase * 0.8f) * 13.0f);
-          const int16_t b1 = 22 + (int16_t)(sinf(x * 0.07f + phase * 0.65f) * 11.0f);
-          const int16_t b2 = 22 + (int16_t)(sinf((x + 1) * 0.07f + phase * 0.65f) * 11.0f);
-          hubSaverCanvas->drawLine(x, y1, x + 1, y2, HUB_CYAN);
-          hubSaverCanvas->drawLine(x, g1, x + 1, g2, HUB_GREEN);
-          hubSaverCanvas->drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+
+    case 11: { // DNA: refined double helix; same scene background as every saver.
+      int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
+      for (int16_t y = 7; y < h - 7; y += 2) {
+        const float t = (float)y * 0.105f + phase;
+        const float wave = sinf(t);
+        const float depth = cosf(t);
+        const int16_t spread = 19 + (int16_t)(depth * 4.0f);
+        const int16_t ax = w / 2 + (int16_t)(wave * spread);
+        const int16_t bx = w / 2 - (int16_t)(wave * spread);
+        const uint16_t ca = depth > 0.0f ? HUB_CYAN : 0x05BF;
+        const uint16_t cb = depth > 0.0f ? 0xF81F : HUB_CYAN;
+        if (y > 7) {
+          cv.drawLine(prevAx, prevAy, ax, y, ca);
+          cv.drawLine(prevBx, prevBy, bx, y, cb);
         }
-        hubTFT.pushImage(0, bandTop, 128, 55, hubSaverCanvas->getBuffer());
-        hubTFT.waitDMA();
-      } else {
-        hubTFT.fillRect(0, bandTop, w, 55, HUB_BG);
-        for (int16_t x = 0; x < w - 1; ++x) {
-          int16_t y1 = mid + (int16_t)(sinf(x * 0.055f + phase) * 19.0f);
-          int16_t y2 = mid + (int16_t)(sinf((x + 1) * 0.055f + phase) * 19.0f);
-          int16_t g1 = mid + 7 + (int16_t)(sinf(x * 0.045f - phase * 0.8f) * 13.0f);
-          int16_t g2 = mid + 7 + (int16_t)(sinf((x + 1) * 0.045f - phase * 0.8f) * 13.0f);
-          int16_t b1 = mid - 5 + (int16_t)(sinf(x * 0.07f + phase * 0.65f) * 11.0f);
-          int16_t b2 = mid - 5 + (int16_t)(sinf((x + 1) * 0.07f + phase * 0.65f) * 11.0f);
-          hubTFT.drawLine(x, y1, x + 1, y2, HUB_CYAN);
-          hubTFT.drawLine(x, g1, x + 1, g2, HUB_GREEN);
-          hubTFT.drawLine(x, b1, x + 1, b2, HUB_YELLOW);
+        if ((y % 12) < 2) {
+          cv.drawLine(ax, y, bx, y, 0x7BEF);
+          const uint8_t r = depth > 0.55f ? 3 : 2;
+          cv.fillCircle(ax, y, r, ca);
+          cv.fillCircle(bx, y, r, cb);
+          cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
+          cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
         }
+        prevAx = ax;
+        prevAy = y;
+        prevBx = bx;
+        prevBy = y;
+      }
+      for (uint8_t i = 0; i < 5; ++i) {
+        const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
+        const int16_t x = w / 2 + (int16_t)(sinf(p) * (28.0f + (i % 3) * 4.0f));
+        const int16_t y = 8 + (int16_t)((((now / (22U + i * 3U)) + i * 19U) % (uint32_t)max(1, h - 16)));
+        cv.fillCircle(x, y, 2, (i & 1) ? HUB_CYAN : HUB_YELLOW);
+        cv.drawPixel(x - 1, y - 1, HUB_WHITE);
       }
       break;
     }
-    default: break;
+
+    default:
+      presentFrame = false;
+      break;
   }
+
+  if (presentFrame) {
+    // waitDMA is essential: the shared canvas must not be modified while the
+    // previous asynchronous SPI transfer is still reading from its buffer.
+    hubTFT.pushImage(0, 25, w, h, cv.getBuffer());
+    hubTFT.waitDMA();
+  }
+
   const uint32_t drawUs = micros() - frameStartedUs;
   ++diagFrames;
   diagTotalUs += drawUs;
