@@ -2906,7 +2906,7 @@ static void drawExtendedLandscapeValues() {
       snprintf(v,sizeof(v),"MQTT %s  HEAP %uK",mqttClient.connected()?"OK":"OFF",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_CYAN,1,v);
       break;
     case 23: case 37:
-      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,52,62,22,black,HUB_CYAN,2,v);
+      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,52,62,22,black,HUB_CYAN,1,v);
       drawValueBox(87,52,62,22,black,fg,1,WiFi.status()==WL_CONNECTED?"CONNECTED":"OFFLINE");
       drawValueBox(10,101,140,14,black,HUB_MUTED,1,WiFi.status()==WL_CONNECTED?WiFi.localIP().toString().c_str():"NO IP");
       break;
@@ -3054,7 +3054,7 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),"%u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(69,111,47,18,HUB_PANEL2,HUB_CYAN,1,v);
       break;
     case 23: // Wi-Fi status
-      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,57,68,25,HUB_PANEL,HUB_CYAN,2,v);
+      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,57,68,25,HUB_PANEL,HUB_CYAN,1,v);
       drawValueBox(10,96,106,14,HUB_PANEL2,HUB_WHITE,1,WiFi.status()==WL_CONNECTED?WiFi.localIP().toString().c_str():"NOT CONNECTED");
       drawValueBox(10,127,106,14,HUB_BG,HUB_MUTED,1,WiFi.status()==WL_CONNECTED?WiFi.SSID().c_str():"NO SSID");
       break;
@@ -3064,7 +3064,7 @@ static void drawExtendedLayoutValues() {
       drawValueBox(10,127,106,14,HUB_BG,climateEndpointReady?HUB_CYAN:HUB_MUTED,1,climateEndpointReady?"CLIMATE ENDPOINT READY":"CLIMATE ENDPOINT --");
       break;
     case 25: // MQTT status
-      drawValueBox(10,56,106,22,HUB_PANEL,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"CONNECTED":"DISCONNECTED");
+      drawValueBox(10,56,90,22,HUB_PANEL,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"CONNECTED":"DISCONNECTED");
       drawValueBox(10,94,106,14,HUB_PANEL2,HUB_WHITE,1,mqttEnabled?"MQTT ENABLED":"MQTT DISABLED");
       drawValueBox(10,126,106,16,HUB_BG,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
       break;
