@@ -2835,7 +2835,137 @@ static void catalogCard(int16_t x, int16_t y, int16_t w, int16_t h,
   hubTFT.print(label);
 }
 
+static const char *catalogLayoutTitle(uint8_t id) {
+  static const char *titles[42] = {
+    "HOME", "CLOCK", "WEATHER", "INDOOR", "CLIMATE", "LIGHT", "AURORA WX", "TFT TEST",
+    "ORBIT", "TERMINAL", "DARK TECH", "AMBER", "GLASS UI", "CYBER",
+    "COMPACT GRID", "STATUS STRIPS", "BIG CLOCK", "BIG TEMP", "WEATHER CARDS", "CLIMATE PRO",
+    "LIGHT + CLIMATE", "LIGHT + WEATHER", "SYSTEM STATUS", "WI-FI STATUS", "MATTER STATUS",
+    "MQTT STATUS", "VERTICAL CLEAN", "VERTICAL WEATHER", "VERTICAL CLIMATE", "NIGHT MODE",
+    "HIGH CONTRAST", "MONO TERMINAL", "WEATHER DARK", "WEATHER LIGHT", "ANALOG CLOCK",
+    "DIGITAL CLOCK", "SENSOR INFO", "NETWORK INFO", "MATTER / MQTT", "WEATHER DIAG",
+    "AMBIENT", "DIAGNOSTICS"
+  };
+  return id < 42 ? titles[id] : "GOODWIN";
+}
+
+static void drawExtendedLandscapeValues() {
+  char v[28];
+  const uint16_t black = hubLayoutId == 30 ? 0x0000 : HUB_BG;
+  const uint16_t fg = hubLayoutId == 31 ? HUB_GREEN : HUB_WHITE;
+  switch (hubLayoutId) {
+    case 14: case 15: case 16: case 29: case 34: case 35:
+      drawValueBox(10,52,62,22,black,fg,2,timeText.c_str());
+      drawValueBox(87,52,62,22,black,HUB_CYAN,1,dateText.c_str());
+      snprintf(v,sizeof(v),sensorValid?"ROOM %.1f C  RH %.0f%%":"ROOM --.- C  RH --%%",sensorValid?indoorTempC:0.0f,sensorValid?indoorHumidity:0.0f);
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      break;
+    case 17: case 19: case 26: case 28: case 36:
+      snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(10,52,62,22,black,fg,2,v);
+      snprintf(v,sizeof(v),sensorValid?"%.0f%% RH":"--%% RH",sensorValid?indoorHumidity:0.0f); drawValueBox(87,52,62,22,black,HUB_CYAN,2,v);
+      snprintf(v,sizeof(v),"%u KB FREE",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      break;
+    case 18: case 27: case 32: case 33: case 39:
+      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(10,52,62,22,black,fg,2,v);
+      snprintf(v,sizeof(v),weatherValid?"WIND %.0f":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(87,52,62,22,black,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%  HUM %.0f%%":"RAIN --  HUM --",weatherValid?outdoorPrecipProbability:0,weatherValid?outdoorHumidity:0.0f);
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      break;
+    case 20: case 21:
+      drawValueBox(10,52,62,22,black,lightOn?HUB_YELLOW:HUB_MUTED,2,lightOn?"ON":"OFF");
+      snprintf(v,sizeof(v),hubLayoutId==20?(sensorValid?"%.1f C":"--.- C"):(weatherValid?"%.1f C":"--.- C"),hubLayoutId==20?(sensorValid?indoorTempC:0.0f):(weatherValid?outdoorTempC:0.0f));
+      drawValueBox(87,52,62,22,black,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),"BRIGHTNESS %u%%",brightnessPercent); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      break;
+    case 22:
+      drawValueBox(10,52,62,22,black,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED,1,WiFi.status()==WL_CONNECTED?"WI-FI OK":"WI-FI OFF");
+      drawValueBox(87,52,62,22,black,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER OK":"MATTER OFF");
+      snprintf(v,sizeof(v),"MQTT %s  HEAP %uK",mqttClient.connected()?"OK":"OFF",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_CYAN,1,v);
+      break;
+    case 23: case 37:
+      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,52,62,22,black,HUB_CYAN,2,v);
+      drawValueBox(87,52,62,22,black,fg,1,WiFi.status()==WL_CONNECTED?"CONNECTED":"OFFLINE");
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,WiFi.status()==WL_CONNECTED?WiFi.localIP().toString().c_str():"NO IP");
+      break;
+    case 24: case 38:
+      drawValueBox(10,52,62,22,black,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER ON":"MATTER OFF");
+      drawValueBox(87,52,62,22,black,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"PAIRED":"UNPAIRED");
+      drawValueBox(10,101,140,14,black,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"MQTT CONNECTED":"MQTT DISCONNECTED");
+      break;
+    case 25:
+      drawValueBox(10,52,62,22,black,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"ONLINE":"OFFLINE");
+      drawValueBox(87,52,62,22,black,HUB_CYAN,1,mqttEnabled?"ENABLED":"DISABLED");
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
+      break;
+    case 30:
+      drawValueBox(10,52,62,22,black,0xFFFF,2,timeText.c_str());
+      snprintf(v,sizeof(v),sensorValid?"IN %.1f":"IN --.-",sensorValid?indoorTempC:0.0f); drawValueBox(87,52,62,22,black,0x07E0,1,v);
+      snprintf(v,sizeof(v),weatherValid?"OUT %.1f":"OUT --.-",weatherValid?outdoorTempC:0.0f); drawValueBox(10,101,140,14,black,0xFFE0,1,v);
+      break;
+    case 31:
+      drawValueBox(10,52,62,22,black,HUB_GREEN,2,timeText.c_str());
+      snprintf(v,sizeof(v),sensorValid?"TEMP %.1f":"TEMP --.-",sensorValid?indoorTempC:0.0f); drawValueBox(87,52,62,22,black,HUB_GREEN,1,v);
+      snprintf(v,sizeof(v),"RSSI %d  HEAP %uK",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127,(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_GREEN,1,v);
+      break;
+    case 40:
+      break;
+    case 41:
+      snprintf(v,sizeof(v),"UP %lu MIN",(unsigned long)(millis()/60000UL)); drawValueBox(10,52,62,22,black,fg,1,v);
+      snprintf(v,sizeof(v),"HEAP %u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(87,52,62,22,black,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),"RSSI %d dBm  MQTT %s",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127,mqttClient.connected()?"OK":"OFF"); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      break;
+    default:
+      snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(10,52,62,22,black,fg,2,v);
+      snprintf(v,sizeof(v),weatherValid?"%.1f C":"--.- C",weatherValid?outdoorTempC:0.0f); drawValueBox(87,52,62,22,black,HUB_CYAN,2,v);
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,timeText.c_str());
+      break;
+  }
+}
+
+static void drawExtendedLandscapeLayout(int16_t w, int16_t h) {
+  const uint16_t bg = hubLayoutId == 30 ? 0x0000 : (hubLayoutId == 33 ? 0xFFFF : HUB_BG);
+  const uint16_t accent = hubLayoutId == 31 ? HUB_GREEN : (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
+  if (hubLayoutId == 40) {
+    hubTFT.fillScreen(0x0000);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(0x39E7,0x0000);
+    hubTFT.setCursor((w-42)/2,(h/2)-5); hubTFT.print("GOODWIN");
+    hubTFT.drawFastHLine(w/2-18,h/2+9,36,HUB_CYAN);
+    return;
+  }
+  hubTFT.fillScreen(bg);
+  hubHeader(w,catalogLayoutTitle(hubLayoutId));
+  if (hubLayoutId == 34) {
+    hubClockFace(w/2,62,29);
+    hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED,bg); hubTFT.setCursor(9,101); hubTFT.print("ANALOG / LOCAL TIME");
+    drawExtendedLandscapeValues();
+    return;
+  }
+  if (hubLayoutId == 35 || hubLayoutId == 16 || hubLayoutId == 29) {
+    catalogCard(5,25,72,75,"LOCAL TIME",bg,accent);
+    catalogCard(82,25,73,75,"DATE / CLIMATE",bg,accent);
+  } else if (hubLayoutId >= 22 && hubLayoutId <= 25) {
+    catalogCard(5,25,72,75,"SERVICE A",bg,accent);
+    catalogCard(82,25,73,75,"SERVICE B",bg,accent);
+  } else if (hubLayoutId == 30 || hubLayoutId == 31) {
+    hubTFT.drawRoundRect(5,25,150,75,5,accent);
+    hubTFT.drawFastHLine(10,91,140,accent);
+  } else {
+    const char *left = (hubLayoutId==18||hubLayoutId==27||hubLayoutId==32||hubLayoutId==33||hubLayoutId==39)?"OUTDOOR":
+                       (hubLayoutId==20||hubLayoutId==21)?"LIGHT":"INDOOR";
+    const char *right = (hubLayoutId==20||hubLayoutId==21)?"ENVIRONMENT":
+                        (hubLayoutId==22||hubLayoutId==23)?"NETWORK":"LIVE DATA";
+    catalogCard(5,25,72,75,left,bg,accent);
+    catalogCard(82,25,73,75,right,bg,accent);
+  }
+  catalogCard(5,106,150,17,"GOODWIN SMART HUB",bg,accent);
+  drawExtendedLandscapeValues();
+}
+
 static void drawExtendedLayoutValues() {
+  if (hubTFT.width() > hubTFT.height()) {
+    drawExtendedLandscapeValues();
+    return;
+  }
   char v[28];
   const int16_t w = hubTFT.width();
   const int16_t h = hubTFT.height();
@@ -2987,6 +3117,10 @@ static void drawExtendedLayoutValues() {
 }
 
 static void drawExtendedLayout(int16_t w, int16_t h) {
+  if (w > h) {
+    drawExtendedLandscapeLayout(w, h);
+    return;
+  }
   const bool landscape = w > h;
   const uint16_t accent = (hubLayoutId == 30 || hubLayoutId == 31) ? HUB_GREEN :
                           (hubLayoutId == 33 ? 0x0841 : HUB_CYAN);
