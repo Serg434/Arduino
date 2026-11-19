@@ -4636,8 +4636,7 @@ void updateSmartHub() {
     lastTftDrawAt = now;
     const uint32_t renderStartedAt = micros();
     drawSmartHub();
-    pushChangedTftFrame();
-    LOG_S("TFT atomic scene presented in %lu ms", (unsigned long)((micros() - renderStartedAt) / 1000UL));
+    LOG_S("TFT atomic scene rendered/presented in %lu ms", (unsigned long)((micros() - renderStartedAt) / 1000UL));
     recordTftFrame();
     return;
   }
