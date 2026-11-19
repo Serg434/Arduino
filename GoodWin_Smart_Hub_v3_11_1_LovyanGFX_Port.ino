@@ -3509,23 +3509,25 @@ static void drawHubScreenSaverFrame() {
       hubSaverLastValueAt = now;
       saverLastTemperature = indoorTempC;
       saverLastHumidity = indoorHumidity;
-      cv.drawRoundRect(8, h / 2 - 32, w - 16, 64, 8, HUB_LINE);
+      cv.drawRoundRect(8, h / 2 - 39, w - 16, 78, 8, HUB_LINE);
       cv.setTextSize(1);
-      cv.setTextColor(HUB_CYAN);
-      cv.setCursor(17, h / 2 - 21);
-      cv.print("TEMPERATURE");
       cv.setTextColor(HUB_MUTED);
-      cv.setCursor(w - 53, h / 2 - 21);
-      cv.print("HUMIDITY");
+      cv.setCursor(16, h / 2 - 29);
+      cv.print("INDOOR TEMPERATURE");
       char value[20];
       snprintf(value, sizeof(value), sensorValid ? "%.1f C" : "--.- C", sensorValid ? indoorTempC : 0.0f);
       cv.setTextSize(2);
       cv.setTextColor(HUB_WHITE);
-      cv.setCursor(15, h / 2 - 2);
+      cv.setCursor(16, h / 2 - 15);
       cv.print(value);
+      cv.setTextSize(1);
+      cv.setTextColor(HUB_MUTED);
+      cv.setCursor(16, h / 2 + 8);
+      cv.print("RELATIVE HUMIDITY");
       snprintf(value, sizeof(value), sensorValid ? "%.0f%%" : "--%%", sensorValid ? indoorHumidity : 0.0f);
+      cv.setTextSize(2);
       cv.setTextColor(HUB_CYAN);
-      cv.setCursor(w - 55, h / 2 - 2);
+      cv.setCursor(16, h / 2 + 19);
       cv.print(value);
       break;
     }
@@ -3629,9 +3631,11 @@ static void drawHubScreenSaverFrame() {
   }
 
   const uint32_t drawUs = micros() - frameStartedUs;
-  ++diagFrames;
-  diagTotalUs += drawUs;
-  if (drawUs > diagMaxUs) diagMaxUs = drawUs;
+  if (presentFrame) {
+    ++diagFrames;
+    diagTotalUs += drawUs;
+    if (drawUs > diagMaxUs) diagMaxUs = drawUs;
+  }
   const uint32_t diagNow = millis();
   if (diagWindowAt == 0) diagWindowAt = diagNow;
   if ((uint32_t)(diagNow - diagWindowAt) >= 5000UL) {
