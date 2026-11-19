@@ -3378,7 +3378,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
 
 void drawSmartHub() {
   // Every normal layout is rendered into the shared RGB565 scene before SPI output.
-  if (hubLayoutId == 7) hubRenderTarget = &hubTFT; // Raw SPI benchmark remains direct by design.
+  if (hubLayoutId == 7) hubRenderTarget = &hubDisplay; // Raw SPI benchmark remains direct by design.
   else ensureHubMainCanvas();
   hubForceFullRedraw = true;
   // A full layout render may repaint cards/labels underneath value widgets.
@@ -3389,7 +3389,7 @@ void drawSmartHub() {
     static bool disabledLogged = false;
     if (!disabledLogged) { LOG_W("TFT rendering skipped: display is disabled in saved state"); disabledLogged = true; }
     // Clear the physical panel even when its backlight is hard-wired to 3.3 V.
-    hubRenderTarget = &hubTFT;
+    hubRenderTarget = &hubDisplay;
     hubDisplay.fillScreen(0x0000);
     return;
   }
@@ -3606,8 +3606,7 @@ void drawSmartHub() {
   pushChangedTftFrame();
 }
 
-// Drawing helpers now write directly to hubTFT. Kept as a no-op so the
-// layout code stays readable without allocating or copying a framebuffer.
+// Main layout renderer: all drawing primitives target the shared scene sprite.
 void pushChangedTftFrame() {
   // One complete scene -> one SPI/DMA presentation, matching the saver pipeline.
   if (hubRenderTarget == hubSaverCanvas && hubSaverCanvas &&
@@ -3620,8 +3619,8 @@ void pushChangedTftFrame() {
 // so an FPS value is misleading when no pixels need updating.
 static void recordTftFrame() {}
 
-// Partial redraw helpers. Each one clears and paints only its own widget area;
-// the ST7735 never receives a full-screen clear for ordinary telemetry changes.
+// Legacy partial helpers remain available for diagnostics, but the normal UI path
+// bypasses them and always presents a complete off-screen scene.
 static void drawDashboardClockPartial() {
   const bool landscape = hubTFT.width() > hubTFT.height();
   drawValueBox(5, 21, 72, 19, HUB_BG, HUB_WHITE, 2, timeText.c_str());
