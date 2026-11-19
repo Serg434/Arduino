@@ -12,7 +12,6 @@
 #include <esp_log.h>
 #include <stdarg.h>
 #include <SPI.h>
-#include <Adafruit_GFX.h>   // GFXcanvas16 is retained for the compact RGB565 value patch.
 #include <LovyanGFX.hpp>
 #include <DHT.h>
 #include <WiFiClientSecure.h>
@@ -214,14 +213,14 @@ public:
   }
 };
 GoodWinTFT hubTFT;
-// Small reusable RGB565 canvas for dynamic widgets only: 114x26 = 5.8 KB.
+// Small native LovyanGFX RGB565 sprite for dynamic value patches: 114x26 = 5.8 KB.
 // The full-screen 128x160 framebuffer would require 40 KB.
 static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
 static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
-static GFXcanvas16 hubValueCanvas(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
-// Shared off-screen animation canvas: every screensaver is composed as a complete
-// RGB565 scene and transferred as one DMA image to eliminate clear-then-redraw flicker.
-static GFXcanvas16 *hubSaverCanvas = nullptr;
+static lgfx::LGFX_Sprite hubValueCanvas(&hubTFT);
+// Shared native LovyanGFX sprite: each saver is composed as a complete RGB565
+// scene and transferred with pushSprite/DMA to eliminate clear-then-redraw flicker.
+static lgfx::LGFX_Sprite *hubSaverCanvas = nullptr;
 static int16_t hubSaverCanvasW = 0;
 static int16_t hubSaverCanvasH = 0;
 static volatile bool hubDisplayDirty = true; // full redraw: boot, layout or structural change
@@ -2700,7 +2699,10 @@ void setupSmartHubDisplay() {
   // Backlight must be active before panel initialization on this module.
   writeDisplayBacklight();
   hubTFT.init();
-  LOG_B("TFT value patch canvas: %s (%u bytes)", hubValueCanvas.getBuffer() ? "READY" : "UNAVAILABLE",
+  hubValueCanvas.setColorDepth(16);
+  void *valuePatchBuffer = hubValueCanvas.createSprite(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
+  LOG_B("LovyanGFX value sprite: %s (%u bytes)",
+        valuePatchBuffer ? "READY" : "UNAVAILABLE",
         (unsigned)(HUB_VALUE_CANVAS_W * HUB_VALUE_CANVAS_H * sizeof(uint16_t)));
   hubTFT.setRotation(0);
   hubTFT.fillScreen(0x0000);
@@ -3606,7 +3608,7 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
   hubValueCanvas.setTextColor(fg, bg);
   hubValueCanvas.setCursor(2, 2);
   hubValueCanvas.print(value);
-  uint16_t *pixels = hubValueCanvas.getBuffer();
+  uint16_t *pixels = static_cast<uint16_t *>(hubValueCanvas.getBuffer());
   if (!pixels) {
     // Keep the display functional if the small canvas allocation ever fails.
     hubTFT.fillRect(x, y, w, h, bg);
@@ -3812,12 +3814,20 @@ static void initHubScreenSaver() {
     hubSaverCanvasW = 0;
     hubSaverCanvasH = 0;
     if (w > 0 && bandHeight > 0) {
-      hubSaverCanvas = new GFXcanvas16(w, bandHeight);
-      if (hubSaverCanvas && hubSaverCanvas->getBuffer()) {
-        hubSaverCanvasW = w;
-        hubSaverCanvasH = bandHeight;
-        LOG_B("Unified saver canvas ready: %dx%d, %u bytes; free heap=%u",
-              w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap());
+      hubSaverCanvas = new lgfx::LGFX_Sprite(&hubTFT);
+      if (hubSaverCanvas) {
+        hubSaverCanvas->setColorDepth(16);
+        void *spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
+        if (spriteBuffer) {
+          hubSaverCanvasW = w;
+          hubSaverCanvasH = bandHeight;
+          LOG_B("LovyanGFX saver sprite ready: %dx%d, %u bytes; free heap=%u",
+                w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap());
+        } else {
+          delete hubSaverCanvas;
+          hubSaverCanvas = nullptr;
+          LOG_ERR("LovyanGFX saver sprite allocation failed; heap=%u", ESP.getFreeHeap());
+        }
       } else {
         delete hubSaverCanvas;
         hubSaverCanvas = nullptr;
@@ -3886,7 +3896,7 @@ static uint16_t saverBlend565(uint16_t a, uint16_t b, uint8_t amount) {
   return ((uint16_t)r << 11) | ((uint16_t)g << 5) | bl;
 }
 
-static void drawSaverCanvasBackdrop(GFXcanvas16 &cv, int16_t w, int16_t h) {
+static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h) {
   // Premium uninterrupted midnight gradient: no graph-paper grid or busy rails.
   // The background is rebuilt in RAM, never erased directly on the TFT.
   const uint16_t top = 0x0208;       // ink navy
@@ -3918,7 +3928,7 @@ static void drawHubScreenSaverFrame() {
     return;
   }
 
-  GFXcanvas16 &cv = *hubSaverCanvas;
+  lgfx::LGFX_Sprite &cv = *hubSaverCanvas;
   const int16_t w = hubSaverCanvasW;
   const int16_t h = hubSaverCanvasH;
   const uint32_t now = millis();
@@ -4313,10 +4323,12 @@ static void drawHubScreenSaverFrame() {
   }
 
   if (presentFrame) {
-    // waitDMA is essential: the shared canvas must not be modified while the
-    // previous asynchronous SPI transfer is still reading from its buffer.
-    hubTFT.pushImage(0, 25, w, h, cv.getBuffer());
+    // pushSprite submits the native sprite to the display. Keep its RGB565
+    // buffer unchanged until the destination DMA engine has finished reading it.
+    hubTFT.startWrite();
+    cv.pushSprite(0, 25);
     hubTFT.waitDMA();
+    hubTFT.endWrite();
   }
 
   const uint32_t drawUs = micros() - frameStartedUs;
