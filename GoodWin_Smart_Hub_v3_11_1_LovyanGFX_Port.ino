@@ -335,7 +335,9 @@ static uint32_t weatherWttrLastAttemptAt = 0;
 static uint32_t weatherMetNoLastAttemptAt = 0;
 
 // On-device adaptive agent: persistent provider learning + online climate anomaly model.
-struct HubAIProviderMemory { uint16_t success = 0, failure = 0; uint32_t avgLatencyMs = 0; uint8_t failureStreak = 0; uint32_t lastSuccessAt = 0; };
+enum HubAIWeatherError : uint8_t { HUB_AI_ERR_NONE=0, HUB_AI_ERR_NO_WIFI=1, HUB_AI_ERR_COOLDOWN=2, HUB_AI_ERR_DNS=3, HUB_AI_ERR_TLS_BEGIN=4, HUB_AI_ERR_TRANSPORT=5, HUB_AI_ERR_HTTP=6, HUB_AI_ERR_JSON=7, HUB_AI_ERR_SCHEMA=8 };
+static uint8_t hubAILastWeatherError = HUB_AI_ERR_NONE;
+struct HubAIProviderMemory { uint16_t success = 0, failure = 0; uint32_t avgLatencyMs = 0; uint8_t failureStreak = 0; uint8_t lastErrorClass = HUB_AI_ERR_NONE; uint32_t lastSuccessAt = 0; };
 static HubAIProviderMemory hubAIProvider[3];
 static uint32_t hubAIEvents = 0;
 static uint32_t hubAIAnomalyCount = 0;
@@ -5002,7 +5004,7 @@ struct WeatherSnapshot {
 };
 
 static bool applyWeatherSnapshot(const WeatherSnapshot &v,const char *provider){
-  if(isnan(v.temperature))return false;
+  if(isnan(v.temperature)){hubAILastWeatherError=HUB_AI_ERR_SCHEMA;return false;}
   const bool firstWeather=!weatherValid;
   const bool visibleChange=firstWeather||isnan(outdoorTempC)||isnan(outdoorHumidity)||isnan(outdoorPrecipMm)||
     changedAtTenth(v.temperature,outdoorTempC)||changedAtTenth(v.humidity,outdoorHumidity)||
@@ -5025,6 +5027,7 @@ static bool applyWeatherSnapshot(const WeatherSnapshot &v,const char *provider){
 
 static bool weatherResolveHost(const char *host, IPAddress &resolved) {
   if (WiFi.status() != WL_CONNECTED) {
+    hubAILastWeatherError = HUB_AI_ERR_NO_WIFI;
     LOG_W("Weather DNS skipped: Wi-Fi disconnected");
     return false;
   }
@@ -5036,6 +5039,7 @@ static bool weatherResolveHost(const char *host, IPAddress &resolved) {
           host, resolved.toString().c_str(), (unsigned long)elapsed, WiFi.RSSI());
     return true;
   }
+  hubAILastWeatherError = HUB_AI_ERR_DNS;
   LOG_ERR("Weather DNS failed for %s (%lu ms, RSSI=%d dBm)",
           host, (unsigned long)elapsed, WiFi.RSSI());
   return false;
@@ -5051,8 +5055,10 @@ static void configureWeatherHttp(WiFiClientSecure &client, HTTPClient &https, co
 }
 
 static bool fetchOpenMeteo(WeatherSnapshot &v) {
+  hubAILastWeatherError = HUB_AI_ERR_NONE;
   const uint32_t now = millis();
   if (weatherOpenMeteoLastAttemptAt && (uint32_t)(now - weatherOpenMeteoLastAttemptAt) < 60000UL) {
+    hubAILastWeatherError = HUB_AI_ERR_COOLDOWN;
     LOG_W("Open-Meteo retry cooldown active");
     return false;
   }
@@ -5069,12 +5075,14 @@ static bool fetchOpenMeteo(WeatherSnapshot &v) {
     "&current=temperature_2m,relative_humidity_2m,apparent_temperature,surface_pressure,wind_speed_10m,wind_direction_10m,cloud_cover,uv_index,precipitation,weather_code" +
     "&hourly=precipitation_probability,precipitation&forecast_days=1&timezone=Asia%2FYekaterinburg";
   if (!https.begin(client, url)) {
+    hubAILastWeatherError = HUB_AI_ERR_TLS_BEGIN;
     LOG_ERR("Open-Meteo HTTPS begin failed");
     return false;
   }
   const uint32_t requestStarted = millis();
   const int code = https.GET();
   if (code != HTTP_CODE_OK) {
+    hubAILastWeatherError = code < 0 ? HUB_AI_ERR_TRANSPORT : HUB_AI_ERR_HTTP;
     LOG_ERR("Open-Meteo HTTP/TLS failed: code=%d (%s), elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
             code, https.errorToString(code).c_str(), (unsigned long)(millis() - requestStarted),
             resolved.toString().c_str(), WiFi.RSSI());
@@ -5101,10 +5109,12 @@ static bool fetchOpenMeteo(WeatherSnapshot &v) {
   DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
   https.end();
   if (err) {
+    hubAILastWeatherError = HUB_AI_ERR_JSON;
     LOG_ERR("Open-Meteo JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
     return false;
   }
   if (doc.overflowed()) {
+    hubAILastWeatherError = HUB_AI_ERR_JSON;
     LOG_ERR("Open-Meteo JSON document overflow");
     return false;
   }
@@ -5133,12 +5143,15 @@ static bool fetchOpenMeteo(WeatherSnapshot &v) {
     }
   }
   LOG_B("Open-Meteo response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
+  if (isnan(v.temperature)) hubAILastWeatherError = HUB_AI_ERR_SCHEMA;
   return !isnan(v.temperature);
 }
 
 static bool fetchWttr(WeatherSnapshot &v) {
+  hubAILastWeatherError = HUB_AI_ERR_NONE;
   const uint32_t now = millis();
   if (weatherWttrLastAttemptAt && (uint32_t)(now - weatherWttrLastAttemptAt) < WEATHER_WTTR_COOLDOWN_MS) {
+    hubAILastWeatherError = HUB_AI_ERR_COOLDOWN;
     LOG_W("wttr.in cooldown active; skipping repeated request");
     return false;
   }
@@ -5152,12 +5165,14 @@ static bool fetchWttr(WeatherSnapshot &v) {
   configureWeatherHttp(client, https, "GoodWinSmartHub/3.11.3 (+https://github.com/Serg434/Arduino)");
   String url = "https://wttr.in/" + String(WEATHER_LAT, 4) + "," + String(WEATHER_LON, 4) + "?format=j1";
   if (!https.begin(client, url)) {
+    hubAILastWeatherError = HUB_AI_ERR_TLS_BEGIN;
     LOG_ERR("wttr.in HTTPS begin failed");
     return false;
   }
   const uint32_t requestStarted = millis();
   const int code = https.GET();
   if (code != HTTP_CODE_OK) {
+    hubAILastWeatherError = code < 0 ? HUB_AI_ERR_TRANSPORT : HUB_AI_ERR_HTTP;
     LOG_ERR("wttr.in HTTP/TLS failed: code=%d (%s), elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
             code, https.errorToString(code).c_str(), (unsigned long)(millis() - requestStarted),
             resolved.toString().c_str(), WiFi.RSSI());
@@ -5180,6 +5195,7 @@ static bool fetchWttr(WeatherSnapshot &v) {
   DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
   https.end();
   if (err) {
+    hubAILastWeatherError = HUB_AI_ERR_JSON;
     LOG_ERR("wttr.in JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
     return false;
   }
@@ -5196,12 +5212,15 @@ static bool fetchWttr(WeatherSnapshot &v) {
   v.precipitationProbability = -1;
   v.weatherCode = -1;
   LOG_B("wttr.in response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
+  if (isnan(v.temperature)) hubAILastWeatherError = HUB_AI_ERR_SCHEMA;
   return !isnan(v.temperature);
 }
 
 static bool fetchMetNo(WeatherSnapshot &v) {
+  hubAILastWeatherError = HUB_AI_ERR_NONE;
   const uint32_t now = millis();
   if (weatherMetNoLastAttemptAt && (uint32_t)(now - weatherMetNoLastAttemptAt) < WEATHER_METNO_COOLDOWN_MS) {
+    hubAILastWeatherError = HUB_AI_ERR_COOLDOWN;
     LOG_W("MET Norway cooldown active (30 min policy/cache interval); skipping request");
     return false;
   }
@@ -5219,12 +5238,14 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   String url = "https://api.met.no/weatherapi/locationforecast/2.0/compact?lat=" +
     String(WEATHER_LAT, 4) + "&lon=" + String(WEATHER_LON, 4);
   if (!https.begin(client, url)) {
+    hubAILastWeatherError = HUB_AI_ERR_TLS_BEGIN;
     LOG_ERR("MET Norway HTTPS begin failed");
     return false;
   }
   const uint32_t requestStarted = millis();
   const int code = https.GET();
   if (code != HTTP_CODE_OK) {
+    hubAILastWeatherError = code < 0 ? HUB_AI_ERR_TRANSPORT : HUB_AI_ERR_HTTP;
     const String errorClass = https.header("X-ErrorClass");
     LOG_ERR("MET Norway HTTP/TLS failed: code=%d (%s), class=%s, elapsed=%lu ms, DNS=%s, RSSI=%d dBm",
             code, https.errorToString(code).c_str(), errorClass.c_str(),
@@ -5247,6 +5268,7 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   DeserializationError err = deserializeJson(doc, https.getStream(), DeserializationOption::Filter(filter));
   https.end();
   if (err) {
+    hubAILastWeatherError = HUB_AI_ERR_JSON;
     LOG_ERR("MET Norway JSON parse failed: %s, capacity=%u", err.c_str(), (unsigned)doc.capacity());
     return false;
   }
@@ -5264,6 +5286,7 @@ static bool fetchMetNo(WeatherSnapshot &v) {
   v.precipitationProbability = -1;
   v.weatherCode = -1;
   LOG_B("MET Norway response parsed in %lu ms", (unsigned long)(millis() - requestStarted));
+  if (isnan(v.temperature)) hubAILastWeatherError = HUB_AI_ERR_SCHEMA;
   return !isnan(v.temperature);
 }
 
@@ -5288,6 +5311,7 @@ static void hubAILoadMemory() {
     snprintf(key, sizeof(key), "bad%u", i); hubAIProvider[i].failure = p.getUShort(key, 0);
     snprintf(key, sizeof(key), "lat%u", i); hubAIProvider[i].avgLatencyMs = p.getUInt(key, 0);
     snprintf(key, sizeof(key), "st%u", i); hubAIProvider[i].failureStreak = p.getUChar(key, 0);
+    snprintf(key, sizeof(key), "err%u", i); hubAIProvider[i].lastErrorClass = p.getUChar(key, 0);
   }
   p.end();
   LOG_B("LOCAL AI memory loaded: events=%lu anomalies=%lu climateSamples=%u providers=%u/%u/%u",
@@ -5313,6 +5337,7 @@ static void hubAISaveMemory(bool force = false) {
     snprintf(key, sizeof(key), "bad%u", i); p.putUShort(key, hubAIProvider[i].failure);
     snprintf(key, sizeof(key), "lat%u", i); p.putUInt(key, hubAIProvider[i].avgLatencyMs);
     snprintf(key, sizeof(key), "st%u", i); p.putUChar(key, hubAIProvider[i].failureStreak);
+    snprintf(key, sizeof(key), "err%u", i); p.putUChar(key, hubAIProvider[i].lastErrorClass);
   }
   p.end();
   hubAILastPersistAt = now;
@@ -5378,7 +5403,8 @@ static uint8_t hubAIChooseWeatherProvider(uint8_t attemptedMask) {
     const float exploration = 0.42f * sqrtf(logf(total + 2.0f) / (n + 1.0f));
     const float latencyPenalty = m.avgLatencyMs ? min(0.22f, m.avgLatencyMs / 60000.0f) : 0.0f;
     const float streakPenalty = min(0.45f, m.failureStreak * 0.09f);
-    const float score = reliability + exploration - latencyPenalty - streakPenalty;
+    const float errorPenalty = (m.lastErrorClass == HUB_AI_ERR_HTTP || m.lastErrorClass == HUB_AI_ERR_JSON || m.lastErrorClass == HUB_AI_ERR_SCHEMA) ? 0.12f : 0.0f;
+    const float score = reliability + exploration - latencyPenalty - streakPenalty - errorPenalty;
     if (score > bestScore) { bestScore = score; best = i; }
   }
   return best;
@@ -5389,15 +5415,16 @@ static void hubAIRecordWeather(uint8_t id, bool success, uint32_t latencyMs) {
   HubAIProviderMemory &m = hubAIProvider[id];
   if (success) {
     if (m.success < 65000) ++m.success;
-    m.failureStreak = 0; m.lastSuccessAt = millis();
+    m.failureStreak = 0; m.lastSuccessAt = millis(); m.lastErrorClass = HUB_AI_ERR_NONE;
   } else {
     if (m.failure < 65000) ++m.failure;
     if (m.failureStreak < 10) ++m.failureStreak;
+    m.lastErrorClass = hubAILastWeatherError;
   }
   m.avgLatencyMs = m.avgLatencyMs ? (m.avgLatencyMs * 7UL + latencyMs) / 8UL : latencyMs;
   ++hubAIEvents;
-  LOG_B("LOCAL AI weather learning: provider=%u result=%s latency=%lu ms ok=%u fail=%u",
-        id, success ? "SUCCESS" : "FAIL", (unsigned long)latencyMs, m.success, m.failure);
+  LOG_B("LOCAL AI weather learning: provider=%u result=%s errorClass=%u latency=%lu ms ok=%u fail=%u",
+        id, success ? "SUCCESS" : "FAIL", m.lastErrorClass, (unsigned long)latencyMs, m.success, m.failure);
   hubAISaveMemory(success);
 }
 
@@ -5573,7 +5600,7 @@ void handleHubData() {
   for (uint8_t i = 0; i < 3; ++i) {
     if (i) json += ',';
     json += "{\"id\":" + String(i) + ",\"ok\":" + String(hubAIProvider[i].success) +
-      ",\"fail\":" + String(hubAIProvider[i].failure) + ",\"avgLatencyMs\":" + String(hubAIProvider[i].avgLatencyMs) + "}";
+      ",\"fail\":" + String(hubAIProvider[i].failure) + ",\"avgLatencyMs\":" + String(hubAIProvider[i].avgLatencyMs) + ",\"lastErrorClass\":" + String(hubAIProvider[i].lastErrorClass) + "}";
   }
   json += "]},\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + jsonEscape(String(weatherStatusCopy)) + "\"}";
   server.send(200, "application/json; charset=utf-8", json);
