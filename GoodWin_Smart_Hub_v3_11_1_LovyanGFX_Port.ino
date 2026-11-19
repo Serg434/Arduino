@@ -609,6 +609,7 @@ void setupSmartHubDisplay();
 static bool ensureHubMainCanvas();
 void updateSmartHub();
 void drawSmartHub();
+static void hubAIObserveClimate(float temperature, float humidity);
 static void hubInvalidateValueCache();
 void pushChangedTftFrame();
 void updateHubClock();
@@ -3058,7 +3059,7 @@ static void drawExtendedLandscapeLayout(int16_t w, int16_t h) {
     hubTFT.drawFastHLine(w/2-18,h/2+9,36,HUB_CYAN);
     return;
   }
-  hubTFT.fillGradientRect(0, 0, w, h, bg == 0xFFFF ? 0xFFFF : (bg == 0x0000 ? 0x0000 : 0x10A5), bg);
+  hubTFT.fillGradientRect(0, 0, w, h, static_cast<uint16_t>(bg == 0xFFFF ? 0xFFFF : (bg == 0x0000 ? 0x0000 : 0x10A5)), static_cast<uint16_t>(bg));
   catalogHeader(w,catalogLayoutTitle(hubLayoutId),bg,accent);
   if (hubLayoutId == 34) {
     hubClockFace(w/2,62,29);
@@ -3414,7 +3415,7 @@ void drawSmartHub() {
   static uint8_t previousLayout=255, previousOrientation=255;
   const int16_t w=hubTFT.width(), h=hubTFT.height();
   const bool landscape=w>h;
-  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubInvalidateValueCache();hubTFT.fillGradientRect(0,0,w,h,0x10A5,HUB_BG);previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
+  if(hubForceFullRedraw||previousLayout!=hubLayoutId||previousOrientation!=hubOrientation){hubInvalidateValueCache();hubTFT.fillGradientRect(0,0,w,h,static_cast<uint16_t>(0x10A5),static_cast<uint16_t>(HUB_BG));previousLayout=hubLayoutId;previousOrientation=hubOrientation;hubForceFullRedraw=false;}
   const uint16_t tempColor=(sensorValid&&indoorTempC>=27.0f)?HUB_ORANGE:HUB_GREEN;
 
   if (hubLayoutId >= 10 && hubLayoutId <= 13) {
