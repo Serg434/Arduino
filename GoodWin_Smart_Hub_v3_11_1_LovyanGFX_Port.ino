@@ -3054,12 +3054,12 @@ static void drawExtendedLayoutValues() {
       snprintf(v,sizeof(v),"%u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(69,111,47,18,HUB_PANEL2,HUB_CYAN,1,v);
       break;
     case 23: // Wi-Fi status
-      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,57,106,25,HUB_PANEL,HUB_CYAN,2,v);
+      snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,57,68,25,HUB_PANEL,HUB_CYAN,2,v);
       drawValueBox(10,96,106,14,HUB_PANEL2,HUB_WHITE,1,WiFi.status()==WL_CONNECTED?WiFi.localIP().toString().c_str():"NOT CONNECTED");
       drawValueBox(10,127,106,14,HUB_BG,HUB_MUTED,1,WiFi.status()==WL_CONNECTED?WiFi.SSID().c_str():"NO SSID");
       break;
     case 24: // Matter status
-      drawValueBox(10,57,106,22,HUB_PANEL,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER READY":"MATTER STOPPED");
+      drawValueBox(30,59,68,16,HUB_BG,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"READY":"OFFLINE");
       drawValueBox(10,94,106,16,HUB_PANEL2,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"FABRIC COMMISSIONED":"WAITING TO PAIR");
       drawValueBox(10,127,106,14,HUB_BG,climateEndpointReady?HUB_CYAN:HUB_MUTED,1,climateEndpointReady?"CLIMATE ENDPOINT READY":"CLIMATE ENDPOINT --");
       break;
@@ -3076,7 +3076,7 @@ static void drawExtendedLayoutValues() {
     case 27: // Vertical weather
       snprintf(v,sizeof(v),weatherValid?"%.1f":"--.-",weatherValid?outdoorTempC:0.0f); drawValueBox(10,88,106,32,HUB_PANEL,HUB_WHITE,3,v);
       snprintf(v,sizeof(v),weatherValid?"WIND %.0f km/h":"WIND --",weatherValid?outdoorWindSpeedKmh:0.0f); drawValueBox(10,122,106,16,HUB_PANEL2,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(10,137,106,14,HUB_BG,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),weatherValid?"RAIN %d%%":"RAIN --",weatherValid?outdoorPrecipProbability:0); drawValueBox(10,140,106,10,HUB_BG,HUB_MUTED,1,v);
       break;
     case 28: // Vertical climate
       snprintf(v,sizeof(v),sensorValid?"%.1f C":"--.- C",sensorValid?indoorTempC:0.0f); drawValueBox(10,62,106,24,HUB_PANEL,HUB_WHITE,2,v);
@@ -3224,7 +3224,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       break;
     case 23:
       hubTFT.drawRoundRect(8,36,w-16,50,8,HUB_LINE);
-      for(uint8_t i=0;i<5;i++){int bh=7+i*6;hubTFT.fillRoundRect(17+i*19,76-bh,10,bh,2,i<3?HUB_GREEN:HUB_CYAN);}
+      for(uint8_t i=0;i<5;i++){int bh=7+i*6;hubTFT.fillRoundRect(86+i*7,80-bh,5,bh,2,i<3?HUB_GREEN:HUB_CYAN);}
       hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,101);hubTFT.print("LOCAL NETWORK");
       hubTFT.drawFastHLine(10,119,w-20,HUB_LINE);
       break;
@@ -3236,7 +3236,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
     case 25:
       hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED,HUB_BG);hubTFT.setCursor(10,37);hubTFT.print("BROKER CONNECTION");
       hubTFT.drawRoundRect(8,53,w-16,35,7,HUB_LINE);
-      hubTFT.fillCircle(20,70,5,mqttClient.connected()?HUB_GREEN:HUB_ORANGE);
+      hubTFT.fillCircle(w-20,70,5,mqttClient.connected()?HUB_GREEN:HUB_ORANGE);
       hubTFT.setCursor(10,101);hubTFT.print("MQTT TELEMETRY");
       hubTFT.drawFastHLine(10,116,w-20,HUB_LINE);
       break;
@@ -3248,7 +3248,6 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
       hubWeatherIcon(w/2,42,1); catalogCard(5,70,118,76,"FORECAST NOW",HUB_PANEL,HUB_CYAN);
       break;
     case 28:
-      hubThermoIcon(12,40,HUB_ORANGE); hubHumidityIcon(15,100,HUB_CYAN);
       catalogCard(5,31,118,54,"TEMPERATURE",HUB_PANEL,HUB_ORANGE);
       catalogCard(5,91,118,55,"RELATIVE HUMIDITY",HUB_PANEL2,HUB_CYAN);
       break;
@@ -3270,7 +3269,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
     case 33:
       hubTFT.fillRoundRect(5,28,118,122,10,0xFFFF);hubTFT.drawRoundRect(5,28,118,122,10,0xBDF7);
       hubTFT.setTextColor(0x0841,0xFFFF);hubTFT.setTextSize(1);hubTFT.setCursor(12,39);hubTFT.print("WEATHER REPORT");
-      hubWeatherIcon(w/2,70,1);
+      hubWeatherIcon(w/2,60,1);
       break;
     case 34:
       hubClockFace(w/2,76,min(w,h)/3);
