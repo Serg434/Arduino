@@ -2866,8 +2866,8 @@ static const char *catalogLayoutTitle(uint8_t id) {
 
 static void drawExtendedLandscapeValues() {
   char v[28];
-  const uint16_t black = hubLayoutId == 30 ? 0x0000 : HUB_BG;
-  const uint16_t fg = hubLayoutId == 31 ? HUB_GREEN : HUB_WHITE;
+  const uint16_t black = hubLayoutId == 30 ? 0x0000 : (hubLayoutId == 33 ? 0xFFFF : HUB_BG);
+  const uint16_t fg = hubLayoutId == 31 ? HUB_GREEN : (hubLayoutId == 33 ? 0x0841 : HUB_WHITE);
   switch (hubLayoutId) {
     case 14: case 15: case 16: case 29: case 35:
       drawValueBox(10,52,62,22,black,fg,2,timeText.c_str());
