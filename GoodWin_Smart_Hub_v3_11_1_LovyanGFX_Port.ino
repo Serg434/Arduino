@@ -3613,11 +3613,10 @@ void drawSmartHub() {
     hubTFT.setTextSize((weatherValid && outdoorTempC < -9.9f) ? 1 : 2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(88,69);
     if(weatherValid) hubTFT.printf("%.1fC",outdoorTempC); else hubTFT.print("--.-C");
     hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_CYAN); hubTFT.setCursor(88,84); if(weatherValid) hubTFT.printf("W %.0fkm/h",outdoorWindSpeedKmh); else hubTFT.print("W --");
-    hubCard(5,100,150,23,HUB_PANEL); hubDropIcon(16,110,1,HUB_CYAN); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(28,108); hubTFT.print("PRECIP");
-    hubTFT.setCursor(77,108); if(weatherValid && outdoorPrecipProbability >= 0) hubTFT.printf("%d%%  %.1fmm",outdoorPrecipProbability,outdoorPrecipMm); else hubTFT.print("--");
-    hubCard(5,128,150,25,HUB_PANEL2,HUB_YELLOW); hubTFT.fillCircle(17,140,4,lightOn?HUB_YELLOW:HUB_MUTED);
-    hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(29,136); hubTFT.print(lightOn?"LIGHT ACTIVE":"LIGHT OFF");
-    hubTFT.setTextColor(HUB_YELLOW); hubTFT.setCursor(112,136); hubTFT.printf("%u%%",brightnessPercent);
+    hubCard(5,100,150,23,HUB_PANEL,HUB_CYAN); hubDropIcon(16,110,1,HUB_CYAN); hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(28,108); hubTFT.print("RAIN");
+    hubTFT.setCursor(58,108); if(weatherValid && outdoorPrecipProbability >= 0) hubTFT.printf("%d%%",outdoorPrecipProbability); else hubTFT.print("--");
+    hubTFT.drawFastVLine(94,104,15,HUB_LINE); hubTFT.fillCircle(103,111,3,lightOn?HUB_YELLOW:HUB_MUTED);
+    hubTFT.setCursor(111,108); hubTFT.print(lightOn?"ON":"OFF"); hubTFT.setTextColor(HUB_YELLOW); hubTFT.setCursor(133,108); hubTFT.printf("%u%%",brightnessPercent);
   } else {
     hubTFT.setTextSize(2); hubTFT.setTextColor(HUB_WHITE); hubTFT.setCursor(7,23); hubTFT.print(timeText);
     hubTFT.setTextSize(1); hubTFT.setTextColor(HUB_MUTED); hubTFT.setCursor(82,30); hubTFT.print(dateText.substring(0,5));
