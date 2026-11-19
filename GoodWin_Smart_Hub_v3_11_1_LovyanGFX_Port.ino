@@ -3694,8 +3694,8 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
                          uint16_t bg, uint16_t fg, uint8_t textSize,
                          const char *value) {
   if (w <= 0 || h <= 0 || !value) return;
-  // Do not transmit unchanged values. A changed value is always composed over
-  // a freshly restored background in the small RAM canvas before one SPI patch.
+  // Do not transmit unchanged values. The value is also fitted to the widget's
+  // real pixel dimensions so long negatives/status strings cannot invade cards.
   if (w <= HUB_VALUE_CANVAS_W && h <= HUB_VALUE_CANVAS_H) {
     for (uint8_t i = 0; i < 16; ++i) {
       HubValueCacheEntry &entry = hubValueCache[i];
@@ -3704,26 +3704,43 @@ static void drawValueBox(int16_t x, int16_t y, int16_t w, int16_t h,
           strcmp(entry.value, value) == 0) return;
     }
   }
+  char fittedValue[32];
+  strlcpy(fittedValue, value, sizeof(fittedValue));
+  uint8_t fittedSize = max((uint8_t)1, textSize);
+  size_t chars = strlen(fittedValue);
+  while (fittedSize > 1 && (chars * 6U * fittedSize > (size_t)max(1, w - 4) ||
+                            8U * fittedSize > (size_t)max(1, h - 2))) --fittedSize;
+  size_t textWidth = chars * 6U * fittedSize;
+  if (textWidth > (size_t)max(1, w - 4)) {
+    const size_t maxChars = (size_t)max(1, w - 4) / (6U * fittedSize);
+    if (maxChars >= 4) {
+      const size_t keep = min((size_t)sizeof(fittedValue) - 1, maxChars - 3);
+      fittedValue[keep] = '.'; fittedValue[keep + 1] = '.'; fittedValue[keep + 2] = '.'; fittedValue[keep + 3] = '\0';
+    } else fittedValue[maxChars] = '\0';
+    chars = strlen(fittedValue);
+    textWidth = chars * 6U * fittedSize;
+  }
+  const int16_t textX = x + (int16_t)max(2, (w - (int16_t)textWidth) / 2);
+  const int16_t textY = y + (int16_t)max(1, (h - (int16_t)(8U * fittedSize)) / 2);
   if (hubRenderTarget != &hubDisplay) {
     // Paint directly into the off-screen RGB565 scene; never expose a clear/print gap.
-    hubTFT.fillRect(x, y, w, h, bg); hubTFT.setTextWrap(false); hubTFT.setTextSize(textSize);
-    hubTFT.setTextColor(fg); hubTFT.setCursor(x + 2, y + 2); hubTFT.print(value); return;
+    hubTFT.fillRect(x, y, w, h, bg); hubTFT.setTextWrap(false); hubTFT.setTextSize(fittedSize);
+    hubTFT.setTextColor(fg); hubTFT.setCursor(textX, textY); hubTFT.print(fittedValue); return;
   }
   if (w > HUB_VALUE_CANVAS_W || h > HUB_VALUE_CANVAS_H) {
     // Defensive fallback for future widgets larger than the reusable patch.
     hubDisplay.fillRect(x, y, w, h, bg);
-    hubDisplay.setTextSize(textSize);
-    hubDisplay.setTextColor(fg, bg);
-    hubDisplay.setCursor(x + 2, y + 2);
-    hubDisplay.print(value);
+    hubDisplay.setTextSize(fittedSize); hubDisplay.setTextColor(fg, bg);
+    hubDisplay.setCursor(textX, textY); hubDisplay.print(fittedValue);
     return;
   }
   hubValueCanvas.fillScreen(bg);
   hubValueCanvas.setTextWrap(false);
-  hubValueCanvas.setTextSize(textSize);
+  hubValueCanvas.setTextSize(fittedSize);
   hubValueCanvas.setTextColor(fg, bg);
-  hubValueCanvas.setCursor(2, 2);
-  hubValueCanvas.print(value);
+  hubValueCanvas.setCursor(2 + max(0, (w - (int16_t)textWidth) / 2),
+                           2 + max(0, (h - (int16_t)(8U * fittedSize)) / 2));
+  hubValueCanvas.print(fittedValue);
   uint16_t *pixels = static_cast<uint16_t *>(hubValueCanvas.getBuffer());
   if (!pixels) {
     // Keep the display functional if the small canvas allocation ever fails.
