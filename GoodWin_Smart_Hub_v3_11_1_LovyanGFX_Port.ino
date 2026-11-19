@@ -4600,7 +4600,7 @@ static void drawHubScreenSaverFrame() {
               const int16_t vx2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][0] - gx;
               const int16_t vy2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][1] - gy;
               const int16_t vz2 = saverPipePath[p][(saverPipeHead[p] + 24 - n + 1) % 24][2] - gz;
-              if (vx1 * vx2 + vy1 * vy2 + vz1 * vz2 != -1) cv.fillSmoothCircle(sx, sy, 4, tube[p]);
+              if (vx1 * vx2 + vy1 * vy2 + vz1 * vz2 != 1) cv.fillSmoothCircle(sx, sy, 4, tube[p]);
             }
           }
           cv.fillCircle(sx, sy, 2, tube[p]);
