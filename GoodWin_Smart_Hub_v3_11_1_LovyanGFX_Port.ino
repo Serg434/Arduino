@@ -343,9 +343,9 @@ static const char *HUB_LAYOUT_NAMES[] = {
 };
 static const char *HUB_SAVER_NAMES[22] = {
   "Нет", "Часы", "Плавающая точка", "Звёзды", "Дождь", "Снег", "Облака", "Температура",
-  "Волна", "Пульс", "Северное сияние", "DNA · Double Helix", "Nebula Drift", "Matrix Rain",
-  "Comet Trails", "Fireflies", "Radar Sweep", "Planetary Orbit", "Equalizer", "Prism Tunnel",
-  "Fractal Bloom", "Star Warp"
+  "Волна", "Пульс", "Северное сияние", "DNA · Double Helix", "Туманность", "Матрица",
+  "Кометные следы", "Светлячки", "Радар", "Планетарные орбиты", "Эквалайзер", "Призматический тоннель",
+  "Фрактальный цветок", "Звёздный разгон"
 };
 
 // ---------- Device identity (set before Matter.begin) ----------
