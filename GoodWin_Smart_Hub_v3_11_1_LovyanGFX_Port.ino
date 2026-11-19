@@ -255,7 +255,7 @@ uint32_t lastTftDrawAt = 0;
 uint8_t hubLayoutId = 0;
 uint8_t hubSaverId = 0;
 uint8_t hubOrientation = 0; // ST7735 rotation: 0..3 (portrait, landscape, inverted portrait, inverted landscape)
-static constexpr uint8_t HUB_SAVER_COUNT = 12;
+static constexpr uint8_t HUB_SAVER_COUNT = 22;
 static uint16_t hubSaverIdleSeconds = 60;
 static constexpr uint32_t HUB_SAVER_FRAME_MS = 40;
 static constexpr uint32_t HUB_DNA_FRAME_MS = 100;
@@ -268,6 +268,8 @@ static uint8_t saverDotRadius = 5;
 static uint8_t saverStarX[18], saverStarY[18], saverStarPhase[18];
 static uint8_t saverRainX[10], saverRainY[10];
 static uint8_t saverSnowX[10], saverSnowY[10];
+static uint8_t saverMatrixY[16];
+static uint8_t saverMatrixSpeed[16];
 static int16_t saverCloudX[2] = { -36, 44 };
 static uint8_t saverPulseRadius = 18;
 static int8_t saverPulseDirection = 1;
@@ -331,8 +333,11 @@ static const char *HUB_LAYOUT_NAMES[] = {
   "Погода тёмная", "Погода светлая", "Часы аналоговые", "Часы цифровые", "Инфо 1", "Инфо 2",
   "Инфо 3", "Инфо 4", "Пустой экран", "Тестовый"
 };
-static const char *HUB_SAVER_NAMES[12] = {
-  "Нет", "Часы", "Плавающая точка", "Звёзды", "Дождь", "Снег", "Облака", "Температура", "Волна", "Пульс", "Северное сияние", "DNA · Double Helix"
+static const char *HUB_SAVER_NAMES[22] = {
+  "Нет", "Часы", "Плавающая точка", "Звёзды", "Дождь", "Снег", "Облака", "Температура",
+  "Волна", "Пульс", "Северное сияние", "DNA · Double Helix", "Nebula Drift", "Matrix Rain",
+  "Comet Trails", "Fireflies", "Radar Sweep", "Planetary Orbit", "Equalizer", "Prism Tunnel",
+  "Fractal Bloom", "Star Warp"
 };
 
 // ---------- Device identity (set before Matter.begin) ----------
@@ -3341,14 +3346,16 @@ static void initHubScreenSaver() {
 
   // Shared frame chrome: the same title, divider and footer are used by every
   // saver. The animation canvas begins below the header and ends above footer.
-  static const char *SAVER_TITLES[12] = {
-    "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW",
-    "CLOUDS", "INDOOR CLIMATE", "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX"
+  static const char *SAVER_TITLES[22] = {
+    "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
+    "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
+    "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
+    "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP"
   };
   hubTFT.setTextSize(1);
   hubTFT.setTextColor(HUB_CYAN, HUB_BG);
   hubTFT.setCursor(7, 7);
-  hubTFT.print(SAVER_TITLES[hubSaverId < 12 ? hubSaverId : 0]);
+  hubTFT.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
   hubTFT.drawFastHLine(7, 19, w - 14, HUB_LINE);
   hubTFT.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
   hubTFT.setTextColor(HUB_MUTED, HUB_BG);
@@ -3379,17 +3386,35 @@ static void initHubScreenSaver() {
     saverSnowX[i] = (uint8_t)random(3, max(4, (int)w - 3));
     saverSnowY[i] = (uint8_t)random(2, max(3, (int)bandHeight - 2));
   }
+  for (uint8_t i = 0; i < 16; ++i) {
+    saverMatrixY[i] = random(0, max(1, (int)bandHeight));
+    saverMatrixSpeed[i] = random(1, 4);
+  }
+}
+
+static uint16_t saverBlend565(uint16_t a, uint16_t b, uint8_t amount) {
+  const uint8_t ar = (a >> 11) & 0x1F, ag = (a >> 5) & 0x3F, ab = a & 0x1F;
+  const uint8_t br = (b >> 11) & 0x1F, bg = (b >> 5) & 0x3F, bb = b & 0x1F;
+  const uint8_t r = ar + (((int16_t)br - ar) * amount) / 255;
+  const uint8_t g = ag + (((int16_t)bg - ag) * amount) / 255;
+  const uint8_t bl = ab + (((int16_t)bb - ab) * amount) / 255;
+  return ((uint16_t)r << 11) | ((uint16_t)g << 5) | bl;
 }
 
 static void drawSaverCanvasBackdrop(GFXcanvas16 &cv, int16_t w, int16_t h) {
-  // Identical base for DNA, aurora and every other effect: deep navy, a
-  // restrained technical grid and fine edge rails. No effect paints its own
-  // differently-coloured rectangle anymore.
-  cv.fillScreen(HUB_BG);
-  for (int16_t y = 12; y < h; y += 18) cv.drawFastHLine(4, y, w - 8, 0x1082);
-  for (int16_t x = 16; x < w; x += 32) cv.drawFastVLine(x, 4, h - 8, 0x0C83);
-  cv.drawFastVLine(3, 4, h - 8, 0x10A4);
-  cv.drawFastVLine(w - 4, 4, h - 8, 0x10A4);
+  // Premium uninterrupted midnight gradient: no graph-paper grid or busy rails.
+  // The background is rebuilt in RAM, never erased directly on the TFT.
+  const uint16_t top = 0x0208;       // ink navy
+  const uint16_t bottom = 0x10A5;    // subtle blue-violet lift
+  for (int16_t y = 0; y < h; ++y) {
+    const uint8_t t = (uint8_t)((uint32_t)y * 255UL / (uint32_t)max(1, h - 1));
+    cv.drawFastHLine(0, y, w, saverBlend565(top, bottom, t));
+  }
+  // Quiet atmospheric glow and edge accents; kept deliberately low contrast.
+  cv.drawFastHLine(8, 3, w - 16, 0x19A7);
+  cv.drawFastHLine(8, h - 4, w - 16, 0x10A4);
+  cv.drawPixel(8, 8, 0x3A0D);
+  cv.drawPixel(w - 9, 8, 0x3A0D);
 }
 
 static void drawHubScreenSaverFrame() {
@@ -3580,40 +3605,184 @@ static void drawHubScreenSaverFrame() {
       break;
     }
 
-    case 11: { // DNA: refined double helix; same scene background as every saver.
-      int16_t prevAx = 0, prevAy = 0, prevBx = 0, prevBy = 0;
-      for (int16_t y = 7; y < h - 7; y += 2) {
-        const float t = (float)y * 0.105f + phase;
-        const float wave = sinf(t);
-        const float depth = cosf(t);
-        const int16_t spread = 19 + (int16_t)(depth * 4.0f);
-        const int16_t ax = w / 2 + (int16_t)(wave * spread);
-        const int16_t bx = w / 2 - (int16_t)(wave * spread);
-        const uint16_t ca = depth > 0.0f ? HUB_CYAN : 0x05BF;
-        const uint16_t cb = depth > 0.0f ? 0xF81F : HUB_CYAN;
-        if (y > 7) {
-          cv.drawLine(prevAx, prevAy, ax, y, ca);
-          cv.drawLine(prevBx, prevBy, bx, y, cb);
+    case 12: { // Nebula Drift: layered orbital clouds and luminous star clusters.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t ring = 0; ring < 4; ++ring) {
+        const float a = phase * (0.22f + ring * 0.07f) + ring * 1.35f;
+        const int16_t rx = 15 + ring * 11;
+        const int16_t ry = 9 + ring * 7;
+        int16_t px = cx + (int16_t)(cosf(a) * rx);
+        int16_t py = cy + (int16_t)(sinf(a) * ry);
+        for (uint8_t k = 1; k <= 18; ++k) {
+          const float q = a + k * 0.16f;
+          const int16_t x = cx + (int16_t)(cosf(q) * rx);
+          const int16_t y = cy + (int16_t)(sinf(q) * ry);
+          if ((k + ring) % 3 == 0) cv.drawPixel(x, y, ring & 1 ? 0xB01F : HUB_CYAN);
+          px = x; py = y;
         }
-        if ((y % 12) < 2) {
-          cv.drawLine(ax, y, bx, y, 0x7BEF);
-          const uint8_t r = depth > 0.55f ? 3 : 2;
-          cv.fillCircle(ax, y, r, ca);
-          cv.fillCircle(bx, y, r, cb);
-          cv.drawPixel(ax - 1, y - 1, HUB_WHITE);
-          cv.drawPixel(bx - 1, y - 1, HUB_WHITE);
-        }
-        prevAx = ax;
-        prevAy = y;
-        prevBx = bx;
-        prevBy = y;
       }
-      for (uint8_t i = 0; i < 5; ++i) {
-        const float p = phase * (0.72f + i * 0.035f) + i * 0.91f;
-        const int16_t x = w / 2 + (int16_t)(sinf(p) * (28.0f + (i % 3) * 4.0f));
-        const int16_t y = 8 + (int16_t)((((now / (22U + i * 3U)) + i * 19U) % (uint32_t)max(1, h - 16)));
-        cv.fillCircle(x, y, 2, (i & 1) ? HUB_CYAN : HUB_YELLOW);
+      for (uint8_t i = 0; i < 7; ++i) {
+        const float a = phase * (0.3f + i * 0.025f) + i * 0.897f;
+        const int16_t x = cx + (int16_t)(cosf(a) * (12 + i * 5));
+        const int16_t y = cy + (int16_t)(sinf(a * 1.23f) * (8 + i * 3));
+        cv.fillCircle(x, y, (i % 3) + 1, i & 1 ? 0xB01F : 0x7DFF);
+      }
+      break;
+    }
+
+    case 13: { // Matrix Rain: falling glyph columns.
+      cv.setTextSize(1);
+      for (uint8_t i = 0; i < 16; ++i) {
+        const int16_t x = 4 + i * (w - 8) / 16;
+        const int16_t y = saverMatrixY[i];
+        cv.setTextColor(0x07E0);
+        cv.setCursor(x, y);
+        cv.write((uint8_t)('0' + ((i * 7U + now / 83U) % 10U)));
+        if (y > 7) {
+          cv.setTextColor(0xAFE0);
+          cv.setCursor(x, y - 8);
+          cv.write((uint8_t)('A' + ((i * 3U + now / 137U) % 26U)));
+        }
+        saverMatrixY[i] = (uint8_t)(y + saverMatrixSpeed[i]);
+        if (saverMatrixY[i] > h + 8) {
+          saverMatrixY[i] = random(0, 18);
+          saverMatrixSpeed[i] = random(1, 4);
+        }
+      }
+      break;
+    }
+
+    case 14: { // Comet Trails: bright heads with tapered segmented tails.
+      for (uint8_t i = 0; i < 3; ++i) {
+        const float p = fmodf(phase * (0.48f + i * 0.13f) + i * 0.37f, 1.0f);
+        const int16_t x = (int16_t)(p * (w + 50)) - 25;
+        const int16_t y = h / 4 + i * (h / 4) + (int16_t)(sinf(phase + i) * 7.0f);
+        for (uint8_t t = 1; t <= 7; ++t) {
+          const int16_t tx = x - t * 4;
+          const int16_t ty = y - t;
+          cv.drawLine(tx, ty, tx + 3, ty + 1, t < 3 ? HUB_CYAN : (t < 5 ? 0x3D7A : 0x2149));
+        }
+        cv.fillCircle(x, y, 3, HUB_WHITE);
+        cv.fillCircle(x - 2, y, 2, HUB_CYAN);
+      }
+      break;
+    }
+
+    case 15: { // Fireflies: slow organic motion with a restrained halo.
+      for (uint8_t i = 0; i < 9; ++i) {
+        const float p = phase * (0.22f + (i % 4) * 0.045f) + i * 1.17f;
+        const int16_t x = w / 2 + (int16_t)(sinf(p * 1.13f) * (18 + (i % 3) * 12));
+        const int16_t y = h / 2 + (int16_t)(cosf(p * 0.83f) * (12 + (i % 4) * 8));
+        const uint16_t c = (i % 3 == 0) ? HUB_YELLOW : (i % 3 == 1 ? 0xBFE0 : HUB_CYAN);
+        cv.drawCircle(x, y, 5 + (int16_t)((sinf(p * 2.0f) + 1.0f) * 2.0f), 0x2149);
+        cv.fillCircle(x, y, 2, c);
         cv.drawPixel(x - 1, y - 1, HUB_WHITE);
+      }
+      break;
+    }
+
+    case 16: { // Radar Sweep: range rings, bearing marks and rotating sweep.
+      const int16_t cx = w / 2, cy = h / 2;
+      const int16_t r = min(w, h) / 2 - 8;
+      cv.drawCircle(cx, cy, r, 0x2A89);
+      cv.drawCircle(cx, cy, r * 2 / 3, 0x2149);
+      cv.drawCircle(cx, cy, r / 3, 0x2149);
+      cv.drawFastHLine(cx - r, cy, r * 2, 0x2149);
+      cv.drawFastVLine(cx, cy - r, r * 2, 0x2149);
+      for (uint8_t i = 0; i < 8; ++i) {
+        const float a = i * 0.785398f;
+        cv.drawLine(cx + (int16_t)(cosf(a) * (r - 3)), cy + (int16_t)(sinf(a) * (r - 3)),
+                    cx + (int16_t)(cosf(a) * r), cy + (int16_t)(sinf(a) * r), 0x3A0D);
+      }
+      const float a = fmodf(phase * 0.72f, 6.283185f);
+      const int16_t sx = cx + (int16_t)(cosf(a) * r);
+      const int16_t sy = cy + (int16_t)(sinf(a) * r);
+      cv.drawLine(cx, cy, sx, sy, HUB_CYAN);
+      cv.drawLine(cx, cy, cx + (int16_t)(cosf(a - 0.35f) * r), cy + (int16_t)(sinf(a - 0.35f) * r), 0x2149);
+      for (uint8_t i = 0; i < 4; ++i) {
+        const int16_t px = cx + (int16_t)(cosf(i * 1.71f + 0.5f) * (8 + i * 8));
+        const int16_t py = cy + (int16_t)(sinf(i * 1.71f + 0.5f) * (8 + i * 8));
+        cv.fillCircle(px, py, 2, HUB_GREEN);
+      }
+      break;
+    }
+
+    case 17: { // Planetary Orbit: elegant orbital paths and moving planets.
+      const int16_t cx = w / 2, cy = h / 2;
+      cv.drawCircle(cx, cy, 8, 0xFC60);
+      cv.fillCircle(cx, cy, 5, HUB_YELLOW);
+      for (uint8_t i = 0; i < 4; ++i) {
+        const int16_t rx = 18 + i * 11;
+        const int16_t ry = 9 + i * 6;
+        cv.drawCircle(cx, cy, rx, 0x2149);
+        const float a = phase * (0.36f + i * 0.11f) + i * 1.2f;
+        const int16_t px = cx + (int16_t)(cosf(a) * rx);
+        const int16_t py = cy + (int16_t)(sinf(a) * ry);
+        cv.fillCircle(px, py, 2 + (i % 2), i & 1 ? HUB_CYAN : 0xF81F);
+        cv.drawPixel(px - 1, py - 1, HUB_WHITE);
+      }
+      break;
+    }
+
+    case 18: { // Equalizer: mirrored audio bars with a smooth travelling envelope.
+      const uint8_t bars = 12;
+      const int16_t gap = 2;
+      const int16_t bw = max(3, (w - 18 - (bars - 1) * gap) / bars);
+      const int16_t total = bars * bw + (bars - 1) * gap;
+      const int16_t left = (w - total) / 2;
+      const int16_t base = h / 2 + 24;
+      for (uint8_t i = 0; i < bars; ++i) {
+        const float v = (sinf(phase * 2.1f + i * 0.62f) + cosf(phase * 1.37f - i * 0.39f) + 2.0f) * 0.25f;
+        const int16_t bh = 7 + (int16_t)(v * (h / 2 - 13));
+        const uint16_t c = i < 4 ? HUB_CYAN : (i < 8 ? 0x7DFF : 0xF81F);
+        cv.fillRoundRect(left + i * (bw + gap), base - bh, bw, bh, 2, c);
+        cv.fillRoundRect(left + i * (bw + gap), base + 3, bw, bh / 3, 2, 0x2149);
+      }
+      cv.drawFastHLine(8, base + 2, w - 16, 0x3A0D);
+      break;
+    }
+
+    case 19: { // Prism Tunnel: nested perspective frames flowing toward a vanishing point.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 7; ++i) {
+        const uint8_t phaseStep = (uint8_t)((now / 75U + i * 31U) % 100U);
+        const int16_t ww = 12 + phaseStep * (w - 20) / 100;
+        const int16_t hh = 10 + phaseStep * (h - 18) / 100;
+        const uint16_t c = i % 3 == 0 ? HUB_CYAN : (i % 3 == 1 ? 0xF81F : 0x7DFF);
+        cv.drawRoundRect(cx - ww / 2, cy - hh / 2, ww, hh, 4, c);
+      }
+      break;
+    }
+
+    case 20: { // Fractal Bloom: rotating petals built from concentric luminous geometry.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 12; ++i) {
+        const float a = phase * 0.42f + i * 0.523599f;
+        const int16_t x = cx + (int16_t)(cosf(a) * 25.0f);
+        const int16_t y = cy + (int16_t)(sinf(a) * 25.0f);
+        cv.drawLine(cx, cy, x, y, 0x2149);
+        cv.drawCircle(x, y, 5, i & 1 ? HUB_CYAN : 0xF81F);
+        cv.fillCircle(x, y, 2, i & 1 ? 0x7DFF : HUB_WHITE);
+      }
+      cv.drawCircle(cx, cy, 13 + (int16_t)((sinf(phase) + 1.0f) * 5.0f), HUB_YELLOW);
+      cv.fillCircle(cx, cy, 4, HUB_WHITE);
+      break;
+    }
+
+    case 21: { // Star Warp: depth-scaled stars rushing from the centre.
+      const int16_t cx = w / 2, cy = h / 2;
+      for (uint8_t i = 0; i < 34; ++i) {
+        const float seed = i * 2.399963f;
+        const float z = fmodf((i * 17.0f + now * 0.075f), 100.0f) + 1.0f;
+        const float scale = 1.0f + z / 22.0f;
+        const int16_t x = cx + (int16_t)(cosf(seed) * scale * (w * 0.42f));
+        const int16_t y = cy + (int16_t)(sinf(seed) * scale * (h * 0.42f));
+        if (x >= 1 && x < w - 1 && y >= 1 && y < h - 1) {
+          const int16_t tail = max(1, (int)(scale * 2.0f));
+          cv.drawLine(cx + (x - cx) * 2 / 3, cy + (y - cy) * 2 / 3, x, y,
+                      z > 65.0f ? HUB_WHITE : (z > 30.0f ? HUB_CYAN : 0x2149));
+          if (tail > 2) cv.drawPixel(x, y, HUB_WHITE);
+        }
       }
       break;
     }
@@ -3721,7 +3890,7 @@ void updateSmartHub() {
       drawSmartHub();
       return;
     }
-    const uint32_t saverInterval = hubSaverId == 11 ? HUB_DNA_FRAME_MS : HUB_SAVER_FRAME_MS;
+    const uint32_t saverInterval = (hubSaverId == 11 || hubSaverId == 12 || hubSaverId == 20) ? HUB_DNA_FRAME_MS : HUB_SAVER_FRAME_MS;
     if (now - hubSaverLastFrameAt >= saverInterval) {
       hubSaverLastFrameAt = now;
       drawHubScreenSaverFrame();
