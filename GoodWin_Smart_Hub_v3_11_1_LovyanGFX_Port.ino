@@ -5665,6 +5665,8 @@ static constexpr uint32_t WEATHER_BOOT_GRACE_MS = 60000UL;
 // TLS/JSON can temporarily consume sizeable contiguous heap blocks. On the
 // 4 MB ESP32 without PSRAM, defer weather until Matter/MQTT have settled.
 static constexpr uint32_t WEATHER_MIN_FREE_HEAP = 80000UL;
+// Keep an extra 10 KB before allocating the worker stack itself.
+static constexpr uint32_t WEATHER_TASK_CREATE_MIN_FREE_HEAP = 90000UL;
 static constexpr uint32_t WEATHER_MIN_LARGEST_BLOCK = 30000UL;
 
 void weatherTask(void *parameter){
@@ -5731,7 +5733,7 @@ static void serviceWeatherTaskStartup() {
   const uint32_t freeHeap = ESP.getFreeHeap();
   const uint32_t largestBlock = ESP.getMaxAllocHeap();
   if (WiFi.status() != WL_CONNECTED ||
-      freeHeap < WEATHER_MIN_FREE_HEAP ||
+      freeHeap < WEATHER_TASK_CREATE_MIN_FREE_HEAP ||
       largestBlock < WEATHER_MIN_LARGEST_BLOCK) {
     static uint32_t lastDeferredLogAt = 0;
     if (!lastDeferredLogAt || (uint32_t)(millis() - lastDeferredLogAt) >= 30000UL) {
@@ -5739,7 +5741,7 @@ static void serviceWeatherTaskStartup() {
       LOG_W("Weather task creation deferred: WiFi=%u free=%lu largest=%lu required=%lu/%lu",
             WiFi.status() == WL_CONNECTED ? 1U : 0U,
             (unsigned long)freeHeap, (unsigned long)largestBlock,
-            (unsigned long)WEATHER_MIN_FREE_HEAP, (unsigned long)WEATHER_MIN_LARGEST_BLOCK);
+            (unsigned long)WEATHER_TASK_CREATE_MIN_FREE_HEAP, (unsigned long)WEATHER_MIN_LARGEST_BLOCK);
     }
     weatherTaskNotBeforeAt = millis() + 30000UL;
     return;
