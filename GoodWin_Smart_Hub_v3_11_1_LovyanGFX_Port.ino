@@ -6190,7 +6190,11 @@ void loop() {
       effects[statusEffect].name);
   }
 
-  stageStartedUs = micros();
-  matterRestartIfNoFabric();
-  hubMeasureLoopStage("matter-recovery", stageStartedUs);
+  // The Matter helper must not run before Matter.begin(). During asynchronous
+  // Wi-Fi startup the main loop is already active while the Matter stack is not.
+  if (matterStarted) {
+    stageStartedUs = micros();
+    matterRestartIfNoFabric();
+    hubMeasureLoopStage("matter-recovery", stageStartedUs);
+  }
 }
