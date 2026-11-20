@@ -16,6 +16,7 @@
 #include <DHT.h>
 #include <WiFiClientSecure.h>
 #include <HTTPClient.h>
+#include <esp_heap_caps.h>
 #include <ArduinoJson.h>
 #include <time.h>
 #include <math.h>
@@ -480,6 +481,20 @@ static void processMqttCommands();
 static void applyMqttCommand(const String &topicName, const String &body);
 static void setMqttStatus(const String &status);
 static String getMqttStatus();
+
+// Low-overhead resource snapshots: heap fragmentation and task stack headroom
+// are logged at subsystem boundaries and in the periodic heartbeat.
+static void hubLogResourceSnapshot(const char *stage) {
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t largestBlock = ESP.getMaxAllocHeap();
+  const uint32_t minimumFree = heap_caps_get_minimum_free_size(MALLOC_CAP_8BIT);
+  const UBaseType_t mqttStackHwm = mqttWorkerTaskHandle ? uxTaskGetStackHighWaterMark(mqttWorkerTaskHandle) : 0;
+  const UBaseType_t weatherStackHwm = weatherTaskHandle ? uxTaskGetStackHighWaterMark(weatherTaskHandle) : 0;
+  LOG_B("RESOURCES stage=%s free=%lu minFree=%lu largest=%lu mqttStackHWM=%lu weatherStackHWM=%lu",
+        stage, (unsigned long)freeHeap, (unsigned long)minimumFree,
+        (unsigned long)largestBlock, (unsigned long)mqttStackHwm, (unsigned long)weatherStackHwm);
+}
+
 bool resetting = false;
 static bool restartPending = false;
 static bool pendingFactoryReset = false;
@@ -5644,11 +5659,31 @@ static void hubAIRecordWeather(uint8_t id, bool success, uint32_t latencyMs) {
   hubAISaveMemory(success);
 }
 
+static constexpr uint32_t WEATHER_BOOT_GRACE_MS = 60000UL;
+// TLS/JSON can temporarily consume sizeable contiguous heap blocks. On the
+// 4 MB ESP32 without PSRAM, defer weather until Matter/MQTT have settled.
+static constexpr uint32_t WEATHER_MIN_FREE_HEAP = 80000UL;
+static constexpr uint32_t WEATHER_MIN_LARGEST_BLOCK = 30000UL;
+
 void weatherTask(void *parameter){
   (void)parameter;
+  const uint32_t firstAttemptAt = millis() + WEATHER_BOOT_GRACE_MS;
+  while ((int32_t)(millis() - firstAttemptAt) < 0) {
+    const uint32_t remaining = firstAttemptAt - millis();
+    vTaskDelay(pdMS_TO_TICKS(remaining));
+  }
+  LOG_B("Weather worker startup grace elapsed");
   for(;;){
     uint32_t nextDelay=WEATHER_INTERVAL_MS;
     if(WiFi.status()!=WL_CONNECTED){setWeatherText("Нет Wi-Fi", "—");nextDelay=60000UL;}
+    else if (ESP.getFreeHeap() < WEATHER_MIN_FREE_HEAP ||
+             ESP.getMaxAllocHeap() < WEATHER_MIN_LARGEST_BLOCK) {
+      setWeatherText("Ожидание свободной памяти", "—");
+      LOG_W("Weather TLS deferred: free=%lu largest=%lu required=%lu/%lu",
+            (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap(),
+            (unsigned long)WEATHER_MIN_FREE_HEAP, (unsigned long)WEATHER_MIN_LARGEST_BLOCK);
+      nextDelay=60000UL;
+    }
     else{
       const uint8_t mode=weatherSourceMode;
       bool ok=false;
@@ -5838,6 +5873,7 @@ void setup() {
     ESP.getCpuFreqMHz(), ESP.getFlashChipSize() / (1024UL * 1024UL),
     ESP.getFlashChipSpeed() / 1000000UL, ESP.getPsramSize() / 1024UL, ESP.getSdkVersion());
   setupSmartHubDisplay();
+  hubLogResourceSnapshot("display-ready");
   configTzTime("YEKT-5", "pool.ntp.org", "time.google.com", "time.cloudflare.com");
   statePrefs.begin("hubcfg", true);
   hubLayoutId = statePrefs.getUChar("layout", 0); if (hubLayoutId >= HUB_LAYOUT_COUNT) hubLayoutId = 0;
@@ -5882,9 +5918,13 @@ void setup() {
   }
 
   startMatter();
+  hubLogResourceSnapshot("matter-started");
   setupWebServer();
+  hubLogResourceSnapshot("http-started");
   setupMqtt();
+  hubLogResourceSnapshot("mqtt-started");
   startWeatherTask();
+  hubLogResourceSnapshot("weather-task-created");
 
   if (MDNS.begin(MDNS_HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
@@ -5941,6 +5981,7 @@ void loop() {
     lastSerialHeartbeatAt=millis();
     char weatherStatusCopy[64], weatherProviderCopy[24];
     copyWeatherText(weatherStatusCopy, sizeof(weatherStatusCopy), weatherProviderCopy, sizeof(weatherProviderCopy));
+    hubLogResourceSnapshot("heartbeat");
     LOG_S("Heartbeat WiFi=%s RSSI=%d IP=%s GW=%s mode=%u HTTP=80 Matter=%s Fabric=%s heap=%u weather=%s/%s testFPS=%u",
       WiFi.status()==WL_CONNECTED?"Y":"N", WiFi.status()==WL_CONNECTED?WiFi.RSSI():0,
       WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), (unsigned)WiFi.getMode(),
