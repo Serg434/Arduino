@@ -3040,6 +3040,18 @@ void setupWebServer() {
     WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str());
 }
 
+// Wait only when the synchronous Arduino mode call reports success but the
+// observable mode has not caught up yet. Never wait after a failed mode call.
+// The timeout is a hard upper bound; an early state transition returns at once.
+static bool waitForWiFiMode(wifi_mode_t expectedMode, uint32_t timeoutMs) {
+  const uint32_t startedAt = millis();
+  do {
+    if (WiFi.getMode() == expectedMode) return true;
+    delay(1);
+  } while ((uint32_t)(millis() - startedAt) < timeoutMs);
+  return WiFi.getMode() == expectedMode;
+}
+
 // ============================================================
 // Wi-Fi setup portal + connection
 // ============================================================
@@ -3121,11 +3133,16 @@ void updatePortalIndicator() {
   if (portalApStage == 1 && now - portalApStageAt >= 150) {
     const wifi_mode_t modeBefore = WiFi.getMode();
     const bool modeOk = WiFi.mode(WIFI_AP_STA);
+    // WiFi.mode() is synchronous. If it reports failure, do not waste time
+    // polling a state transition that cannot complete. If it reports success
+    // but the public mode has not caught up, wait only as long as necessary.
+    const bool modeReady = modeOk &&
+      (WiFi.getMode() == WIFI_AP_STA || waitForWiFiMode(WIFI_AP_STA, 250UL));
     const wifi_mode_t modeAfter = WiFi.getMode();
-    LOG_W("Wi-Fi driver init: requested=AP+STA before=%u result=%s after=%u status=%u heap=%u largest=%u",
-      (unsigned)modeBefore, modeOk ? "true" : "false", (unsigned)modeAfter,
-      (unsigned)WiFi.status(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    if (!modeOk || modeAfter != WIFI_AP_STA) {
+    LOG_W("Wi-Fi driver init: requested=AP+STA before=%u result=%s ready=%s after=%u status=%u heap=%u largest=%u",
+      (unsigned)modeBefore, modeOk ? "true" : "false", modeReady ? "true" : "false",
+      (unsigned)modeAfter, (unsigned)WiFi.status(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    if (!modeOk || !modeReady || modeAfter != WIFI_AP_STA) {
       LOG_ERR("Wi-Fi driver is not ready; portal AP initialization will retry");
       portalApStage = 0;
       lastPortalApRetryAt = now;
@@ -6752,6 +6769,13 @@ void setup() {
   Serial.println("[BOOT] GoodWin Smart Hub v3.11.4-dev - Serial console ready @115200");
   Serial.flush();
   previousEspLogVprintf = esp_log_set_vprintf(webEspLogVprintf);
+  // Temporarily expose the first lower-level Wi-Fi/NVS/netif initialization
+  // error. The Arduino WiFi.mode() bool alone hides the esp_wifi_init result.
+  esp_log_level_set("wifi", ESP_LOG_VERBOSE);
+  esp_log_level_set("wifi_init", ESP_LOG_VERBOSE);
+  esp_log_level_set("esp_netif", ESP_LOG_VERBOSE);
+  esp_log_level_set("nvs", ESP_LOG_DEBUG);
+  LOG_B("Wi-Fi diagnostic logging enabled for wifi/wifi_init/esp_netif/nvs");
   LOG_B("GoodWin Smart Hub booting");
   LOG_B("Hardware: board-profile=%s chip=%s rev=%u cores=%u CPU=%uMHz Flash=%uMB @%uMHz PSRAM=%uKB ESP-IDF=%s",
     GOODWIN_BOARD_PROFILE, ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
