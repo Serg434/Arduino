@@ -1787,6 +1787,10 @@ private:
   }
 };
 
+static void mqttDiscoveryReportFailure(const char *entity, const char *stage, const char *reason,
+                                       const char *topic, const char *payload, size_t payloadLength,
+                                       int itemIndex = -1);
+
 static bool mqttValidateAnyJson(const char *entity, const char *topic,
                                const char *payload, size_t payloadLength) {
   if (!payload || payloadLength == 0 || payloadLength >= sizeof(mqttDiscoveryValidationBuffer)) {
@@ -1895,7 +1899,7 @@ static bool mqttJsonAppendDevice(MqttJsonWriter &json, bool &first) {
 
 static void mqttDiscoveryReportFailure(const char *entity, const char *stage, const char *reason,
                                        const char *topic, const char *payload, size_t payloadLength,
-                                       int itemIndex = -1) {
+                                       int itemIndex) {
   Serial.printf("[MQTT][DISCOVERY][ERROR] entity=%s stage=%s reason=%s item=%d topic=%s payload=%u "
                 "mqttBuffer=%u heap=%u largest=%u minHeap=%u\n",
                 entity ? entity : "<null>", stage ? stage : "<null>",
