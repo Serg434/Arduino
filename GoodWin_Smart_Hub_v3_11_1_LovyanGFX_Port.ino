@@ -2199,7 +2199,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "speed/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "speed/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "speed/set")) {
+      mqttDiscoveryReportFailure("number.goodwin_effect_speed", "TOPIC_BUILD", "SPEED_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/number/goodwin_effect_speed/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
@@ -2224,7 +2227,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display/set")) {
+      mqttDiscoveryReportFailure("switch.goodwin_display", "TOPIC_BUILD", "DISPLAY_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/switch/goodwin_display/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
@@ -2248,7 +2254,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display_brightness/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_brightness/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_brightness/set")) {
+      mqttDiscoveryReportFailure("number.goodwin_display_brightness", "TOPIC_BUILD", "DISPLAY_BRIGHTNESS_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/number/goodwin_display_brightness/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
@@ -2275,7 +2284,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "screen_layout/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screen_layout/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screen_layout/set")) {
+      mqttDiscoveryReportFailure("select.goodwin_screen_layout", "TOPIC_BUILD", "SCREEN_LAYOUT_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/select/goodwin_screen_layout/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
@@ -2299,7 +2311,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "screensaver/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screensaver/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screensaver/set")) {
+      mqttDiscoveryReportFailure("select.goodwin_screensaver", "TOPIC_BUILD", "SCREENSAVER_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/select/goodwin_screensaver/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
@@ -2324,7 +2339,10 @@ bool publishMqttDiscovery() {
     char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
     if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display_orientation/state") ||
-        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_orientation/set")) return false;
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_orientation/set")) {
+      mqttDiscoveryReportFailure("select.goodwin_display_orientation", "TOPIC_BUILD", "DISPLAY_ORIENTATION_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
     const char *topic = "homeassistant/select/goodwin_display_orientation/config";
     MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
     json.character('{');
