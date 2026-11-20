@@ -18,6 +18,7 @@
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
 #include <time.h>
+#include "GoodWin_AsyncDiagnostics.h"
 #include <math.h>
 
 // The selected Arduino target supplies the board profile. Runtime silicon
@@ -2187,6 +2188,7 @@ void handleLogsClear() {
 
 void setupWebServer() {
   server.on("/", HTTP_GET, handleRoot);
+  server.on("/dashboard", HTTP_GET, []() { GoodWinDiagnostics::handleDashboard(server); });
   server.on("/api", HTTP_GET, handleApi);
   server.on("/system", HTTP_GET, handleSystemMetrics);
   server.on("/weather/refresh", HTTP_POST, handleWeatherRefresh);
@@ -2216,6 +2218,8 @@ void setupWebServer() {
     server.sendHeader("Location", "/");
     server.send(302, "text/plain", "");
   });
+  GoodWinDiagnostics::begin();
+  GoodWinDiagnostics::registerRoutes(server);
   server.begin();
   LOG_H("HTTP server started on port 80; mode=%u STA=%s AP=%s GW=%s MASK=%s",
     (unsigned)WiFi.getMode(), WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str(),
