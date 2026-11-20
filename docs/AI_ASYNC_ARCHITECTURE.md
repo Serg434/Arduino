@@ -32,7 +32,7 @@ Upstream reference: https://github.com/adesgautam/micro-lm
 ## Rollout sequence
 
 1. Keep dev/lovyangfx-tft-port untouched; work only on feature/async-core-3-12.
-2. Keep the CI partition table aligned with Matter's 4 MB scheme. The default 1.2 MB application slot is too small for the current 2.1 MB sketch.
+2. CI uses the available 3 MB Huge APP partition because Arduino-ESP32 3.3.12 does not expose the newer Matter partition menu key. This scheme has no OTA slot. The default 1.2 MB application slot is too small for the current 2.1 MB sketch. The exact physical partition table must still match the board's existing Matter/NVS layout before flashing.
 3. Validate the dashboard and diagnostic worker on hardware, including weather endpoint tests.
 4. Move MQTT to a single-owner worker and route state-changing callbacks through a bounded command queue.
 5. Migrate WebServer routes incrementally to AsyncWebServer after dependency/API validation.
