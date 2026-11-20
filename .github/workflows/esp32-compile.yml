@@ -43,4 +43,14 @@ jobs:
 
       - name: Compile for ESP32 Dev Module (Huge APP 3 MB partition)
         run: |
-          arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --warnings all /tmp/GoodWinSmartHub
+          mkdir -p /tmp/GoodWinBuild
+          arduino-cli compile --fqbn esp32:esp32:esp32:PartitionScheme=huge_app --warnings all --output-dir /tmp/GoodWinBuild /tmp/GoodWinSmartHub
+          sha256sum /tmp/GoodWinBuild/*.elf
+
+      - name: Preserve ELF for crash backtrace decoding
+        uses: actions/upload-artifact@v4
+        with:
+          name: goodwin-smart-hub-elf
+          path: /tmp/GoodWinBuild/*.elf
+          if-no-files-found: error
+          retention-days: 14
