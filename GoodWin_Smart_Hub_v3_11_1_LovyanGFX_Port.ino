@@ -3059,8 +3059,10 @@ void startPortal() {
   portalMatterStarted = false;
 
   LOG_W("Starting Wi-Fi setup portal asynchronously; saved credentials will be retried");
-  // Wi-Fi driver and netifs are initialized by updatePortalIndicator().
-  // Do not call disconnect/setSleep/setTxPower before WiFi.mode() succeeds.
+  // setHostname() only stages the hostname in NetworkManager; WiFi.mode()
+  // applies it when the STA netif is created. Other driver operations wait
+  // until updatePortalIndicator() confirms successful mode initialization.
+  if (!WiFi.setHostname(WIFI_HOSTNAME)) LOG_ERR("Could not stage Wi-Fi hostname");
 
   portalLedLastToggle = 0;
   portalLedState = false;
@@ -3133,7 +3135,6 @@ void updatePortalIndicator() {
     WiFi.setAutoReconnect(false);
     const bool disconnectOk = WiFi.disconnect(false, false);
     if (!disconnectOk) LOG_W("Wi-Fi disconnect returned false during clean portal startup");
-    if (!WiFi.setHostname(WIFI_HOSTNAME)) LOG_ERR("Could not set Wi-Fi hostname");
     if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep");
     if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power");
 
