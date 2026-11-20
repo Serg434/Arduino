@@ -3124,9 +3124,8 @@ bool startAccessPoint(bool recoveryMode) {
     return false;
   }
 
-  // Clear a stale AP instance only after successful driver/mode initialization.
-  WiFi.softAPdisconnect(true);
-  delay(100);
+  // softAP() applies the requested AP configuration. Avoid tearing down the
+  // AP interface here: doing so can change the active Wi-Fi mode during recovery.
   const bool ok = WiFi.softAP(AP_NAME, AP_PASSWORD, 1, false, 4);
   if (ok) {
     delay(250);
