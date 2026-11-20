@@ -756,6 +756,18 @@ WebServer server(80);
 WiFiClient mqttNetwork;
 PubSubClient mqttClient(mqttNetwork);
 
+// Wi-Fi event diagnostics: callback only records facts; Serial logging stays in loop().
+static portMUX_TYPE wifiEventMux = portMUX_INITIALIZER_UNLOCKED;
+static volatile bool wifiEvtDisconnected = false;
+static volatile bool wifiEvtConnected = false;
+static volatile bool wifiEvtGotIp = false;
+static volatile uint16_t wifiLastDisconnectReason = 0;
+static volatile uint32_t wifiDisconnectCount = 0;
+static volatile uint32_t wifiLastDisconnectAt = 0;
+
+// Web UI only queues an MQTT test. All PubSubClient I/O remains owned by loop().
+static volatile bool mqttTestPending = false;
+
 String wifiSSID;
 String wifiPassword;
 String pairingCode;
@@ -898,6 +910,8 @@ uint32_t randomTimer = 0;
 uint32_t randomInterval = 150;
 
 // ---------- Function prototypes ----------
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info);
+static void processWiFiEventDiagnostics();
 void factoryReset();
 void startPortal();
 bool startAccessPoint(bool recoveryMode);
@@ -2180,6 +2194,8 @@ void setupMqtt() {
 
 bool mqttConnectNow() {
   if (WiFi.status() != WL_CONNECTED) { mqttLastError = "Нет подключения к Wi-Fi"; return false; }
+  // Bound the TCP handshake separately from PubSubClient's socket read timeout.
+  mqttNetwork.setConnectionTimeout(1500);
   if (!mqttConfigured()) { mqttLastError = mqttEnabled ? "Не указан адрес брокера" : "MQTT выключен"; return false; }
   if (mqttClient.connected()) return true;
   mqttClient.setServer(mqttHost.c_str(), mqttPort);
@@ -2211,10 +2227,13 @@ bool mqttConnectNow() {
 void mqttLoop() {
   if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) return;
   static uint32_t lastAttempt = 0;
+  const bool testRequested = mqttTestPending;
+  if (testRequested) mqttTestPending = false;
   if (!mqttClient.connected()) {
-    // TCP connect is synchronous on this core. Defer retries during animations.
-    if (hubSaverActive) return;
-    if (millis() - lastAttempt < 30000) return;
+    // TCP connect is synchronous; the handshake is bounded to 1.5 s.
+    // A web-panel test is queued here so HTTP handlers never own the MQTT socket.
+    if (hubSaverActive && !testRequested) return;
+    if (!testRequested && (uint32_t)(millis() - lastAttempt) < 30000UL) return;
     lastAttempt = millis();
     mqttConnectNow();
   }
@@ -2267,9 +2286,20 @@ void handleMqttSave() {
 }
 
 void handleMqttTest() {
-  const bool ok = mqttConnectNow();
-  String json = "{\"ok\":" + String(ok ? "true" : "false") + ",\"message\":\"" + jsonEscape(mqttLastError) + "\"}";
-  server.send(ok ? 200 : 503, "application/json; charset=utf-8", json);
+  if (WiFi.status() != WL_CONNECTED) {
+    server.send(503, "application/json; charset=utf-8",
+      "{\"ok\":false,\"message\":\"Нет подключения к Wi-Fi\"}");
+    return;
+  }
+  if (!mqttConfigured()) {
+    server.send(400, "application/json; charset=utf-8",
+      "{\"ok\":false,\"message\":\"MQTT не настроен или выключен\"}");
+    return;
+  }
+  mqttTestPending = true;
+  mqttLastError = "Проверка поставлена в очередь";
+  server.send(202, "application/json; charset=utf-8",
+    "{\"ok\":true,\"queued\":true,\"message\":\"Проверка MQTT выполняется в основном цикле\"}");
 }
 
 void handleScanStart() {
@@ -2799,7 +2829,8 @@ void processWiFiRecovery() {
 
   // Keep the recovery AP available until the station link is stable for 30 s.
   if (recoveryAPStarted && now - wifiConnectedSince >= 30000) {
-    LOG_W("Wi-Fi stable; stopping recovery AP");
+    LOG_W("Wi-Fi stable; restoring automatic reconnect and stopping recovery AP");
+    WiFi.setAutoReconnect(true);
     WiFi.softAPdisconnect(true);
     WiFi.mode(WIFI_STA);
     recoveryAPStarted = false;
@@ -6017,11 +6048,59 @@ void handleHubData() {
   server.send(200, "application/json; charset=utf-8", json);
 }
 
+// Wi-Fi event callback runs in the Arduino event task. Keep it deliberately
+// lightweight: capture reason codes here and emit diagnostics from loop().
+void onWiFiEvent(WiFiEvent_t event, WiFiEventInfo_t info) {
+  portENTER_CRITICAL(&wifiEventMux);
+  if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
+    wifiLastDisconnectReason = info.wifi_sta_disconnected.reason;
+    wifiLastDisconnectAt = millis();
+    wifiDisconnectCount++;
+    wifiEvtDisconnected = true;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_CONNECTED) {
+    wifiEvtConnected = true;
+  } else if (event == ARDUINO_EVENT_WIFI_STA_GOT_IP) {
+    wifiEvtGotIp = true;
+  }
+  portEXIT_CRITICAL(&wifiEventMux);
+}
+
+static void processWiFiEventDiagnostics() {
+  bool disconnected, connected, gotIp;
+  uint16_t reason;
+  uint32_t count, eventAt;
+  portENTER_CRITICAL(&wifiEventMux);
+  disconnected = wifiEvtDisconnected; wifiEvtDisconnected = false;
+  connected = wifiEvtConnected; wifiEvtConnected = false;
+  gotIp = wifiEvtGotIp; wifiEvtGotIp = false;
+  reason = wifiLastDisconnectReason;
+  count = wifiDisconnectCount;
+  eventAt = wifiLastDisconnectAt;
+  portEXIT_CRITICAL(&wifiEventMux);
+
+  if (disconnected) {
+    LOG_ERR("[WIFI-EVENT] STA disconnected reason=%u count=%lu eventAge=%lu ms status=%u RSSI=%d heap=%u",
+      (unsigned)reason, (unsigned long)count,
+      (unsigned long)(millis() - eventAt), (unsigned)WiFi.status(),
+      WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127, ESP.getFreeHeap());
+  }
+  if (connected) {
+    LOG_W("[WIFI-EVENT] STA associated channel=%d RSSI=%d",
+      WiFi.channel(), WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127);
+  }
+  if (gotIp) {
+    LOG_W("[WIFI-EVENT] STA got IP=%s gateway=%s channel=%d RSSI=%d",
+      WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
+      WiFi.channel(), WiFi.RSSI());
+  }
+}
+
 // ============================================================
 // Arduino setup / loop
 // ============================================================
 void setup() {
   Serial.begin(115200);
+  WiFi.onEvent(onWiFiEvent);
   delay(500);
   Serial.println();
   Serial.println("[BOOT] GoodWin Smart Hub v3.11.3-dev - Serial console ready @115200");
@@ -6117,6 +6196,7 @@ static void hubMeasureLoopStage(const char *stage, uint32_t startedUs) {
 }
 
 void loop() {
+  processWiFiEventDiagnostics();
   // Service HTTP both before and after the display update. A complete TFT scene
   // can take ~41 ms; the second poll prevents a request arriving during rendering
   // from waiting for the next loop iteration.
