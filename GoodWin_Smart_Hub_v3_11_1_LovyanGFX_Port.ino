@@ -677,6 +677,9 @@ void handleMqttTest();
 void publishMqttState();
 bool publishMqttDiscovery();
 void publishMqttTelemetry();
+static bool mqttBuildTopicFixed(char *out, size_t outSize, const char *suffix);
+static bool mqttPublishRetainedText(const char *suffix, const char *payload, const char *entity, bool validateJson);
+static bool mqttSubscribeFixed(const char *suffix);
 void setEffectSpeed(uint16_t value);
 void handleSpeed();
 void setupSmartHubDisplay();
@@ -1671,15 +1674,15 @@ void publishMqttStateNow() {
   payload += "\",\"brightness\":";
   payload += String((uint16_t)brightnessPercent * 255U / 100U);
   payload += ",\"effect\":\"" + jsonEscape(effects[currentEffect].name) + "\"}";
-  mqttClient.publish(mqttTopic("light/state").c_str(), payload.c_str(), true);
-  mqttClient.publish(mqttTopic("speed/state").c_str(), String(effectSpeedPercent).c_str(), true);
-  mqttClient.publish(mqttTopic("effect/state").c_str(), effects[currentEffect].name, true);
-  mqttClient.publish(mqttTopic("display/state").c_str(), (hubDisplayEnabled && displayMatterOn) ? "ON" : "OFF", true);
-  mqttClient.publish(mqttTopic("display_brightness/state").c_str(), String(displayBrightnessPercent).c_str(), true);
-  mqttClient.publish(mqttTopic("screen_layout/state").c_str(), HUB_LAYOUT_NAMES[hubLayoutId], true);
-  mqttClient.publish(mqttTopic("screensaver/state").c_str(), HUB_SAVER_NAMES[hubSaverId], true);
+  mqttPublishRetainedText("light/state", payload.c_str(), "light/state", true);
+  mqttPublishRetainedText("speed/state", String(effectSpeedPercent).c_str(), "speed/state", false);
+  mqttPublishRetainedText("effect/state", effects[currentEffect].name, "effect/state", false);
+  mqttPublishRetainedText("display/state", (hubDisplayEnabled && displayMatterOn) ? "ON" : "OFF", "display/state", false);
+  mqttPublishRetainedText("display_brightness/state", String(displayBrightnessPercent).c_str(), "display_brightness/state", false);
+  mqttPublishRetainedText("screen_layout/state", HUB_LAYOUT_NAMES[hubLayoutId], "screen_layout/state", false);
+  mqttPublishRetainedText("screensaver/state", HUB_SAVER_NAMES[hubSaverId], "screensaver/state", false);
   static const char *orientationNames[] = {"Портрет", "Альбомная", "Портрет 180°", "Альбомная 180°"};
-  mqttClient.publish(mqttTopic("display_orientation/state").c_str(), orientationNames[hubOrientation], true);
+  mqttPublishRetainedText("display_orientation/state", orientationNames[hubOrientation], "display_orientation/state", false);
   publishMqttTelemetry();
   mqttStateDirty = false;
 }
@@ -1783,6 +1786,87 @@ private:
     return true;
   }
 };
+
+static bool mqttValidateAnyJson(const char *entity, const char *topic,
+                               const char *payload, size_t payloadLength) {
+  if (!payload || payloadLength == 0 || payloadLength >= sizeof(mqttDiscoveryValidationBuffer)) {
+    mqttDiscoveryReportFailure(entity, "JSON_INPUT", "EMPTY_OR_OVERSIZED_PAYLOAD",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  memcpy(mqttDiscoveryValidationBuffer, payload, payloadLength);
+  mqttDiscoveryValidationBuffer[payloadLength] = '\0';
+  mqttDiscoveryValidationDoc.clear();
+  DeserializationError parseError =
+    deserializeJson(mqttDiscoveryValidationDoc, mqttDiscoveryValidationBuffer, payloadLength);
+  if (parseError) {
+    mqttDiscoveryReportFailure(entity, "JSON_PARSE", parseError.c_str(),
+                               topic, payload, payloadLength);
+    return false;
+  }
+  if (!mqttDiscoveryValidationDoc.is<JsonObject>()) {
+    mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "ROOT_IS_NOT_OBJECT",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  return true;
+}
+
+static bool mqttPublishRetainedText(const char *suffix, const char *payload,
+                                    const char *entity, bool validateJson) {
+  char topic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  if (!mqttBuildTopicFixed(topic, sizeof(topic), suffix)) {
+    mqttDiscoveryReportFailure(entity, "TOPIC_BUILD", "STATE_TOPIC_BUILD_FAILED",
+                               nullptr, payload, payload ? strnlen(payload, MQTT_DISCOVERY_PAYLOAD_CAPACITY) : 0);
+    return false;
+  }
+  if (!payload) {
+    mqttDiscoveryReportFailure(entity, "PAYLOAD", "NULL_PAYLOAD_POINTER",
+                               topic, nullptr, 0);
+    return false;
+  }
+  const size_t payloadLength = strnlen(payload, MQTT_DISCOVERY_PAYLOAD_CAPACITY);
+  if (payloadLength >= MQTT_DISCOVERY_PAYLOAD_CAPACITY) {
+    mqttDiscoveryReportFailure(entity, "PAYLOAD", "PAYLOAD_NOT_TERMINATED_OR_TOO_LONG",
+                               topic, nullptr, payloadLength);
+    return false;
+  }
+  const size_t topicLength = strlen(topic);
+  const size_t requiredPacketBytes = 5U + 2U + topicLength + payloadLength;
+  const size_t mqttBufferSize = mqttClient.getBufferSize();
+  if (requiredPacketBytes > mqttBufferSize) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PACKET_SIZE", "PACKET_EXCEEDS_PUBSUBCLIENT_BUFFER",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  if (validateJson && !mqttValidateAnyJson(entity, topic, payload, payloadLength)) return false;
+  if (!mqttClient.connected()) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PUBLISH", "CLIENT_NOT_CONNECTED",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  if (!mqttClient.publish(topic, payload, true)) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PUBLISH", "PUBSUBCLIENT_RETURNED_FALSE",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  return true;
+}
+
+static bool mqttSubscribeFixed(const char *suffix) {
+  char topic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  if (!mqttBuildTopicFixed(topic, sizeof(topic), suffix)) {
+    mqttDiscoveryReportFailure("MQTT subscription", "TOPIC_BUILD", "SUBSCRIBE_TOPIC_BUILD_FAILED",
+                               nullptr, nullptr, 0);
+    return false;
+  }
+  if (!mqttClient.connected() || !mqttClient.subscribe(topic)) {
+    mqttDiscoveryReportFailure("MQTT subscription", "SUBSCRIBE", "PUBSUBCLIENT_SUBSCRIBE_FAILED",
+                               topic, nullptr, 0);
+    return false;
+  }
+  return true;
+}
 
 static bool mqttBuildTopicFixed(char *out, size_t outSize, const char *suffix) {
   if (!out || outSize == 0 || !suffix || !suffix[0]) return false;
@@ -2286,8 +2370,14 @@ bool publishMqttDiscovery() {
 void publishMqttTelemetry() {
   if (!mqttClient.connected()) return;
   auto pub = [&](const char *suffix, const String &value) {
-    const String topic = mqttTopic((String(suffix) + "/state").c_str());
-    mqttClient.publish(topic.c_str(), value.c_str(), true);
+    char stateSuffix[96];
+    const int written = snprintf(stateSuffix, sizeof(stateSuffix), "%s/state", suffix ? suffix : "");
+    if (written <= 0 || (size_t)written >= sizeof(stateSuffix)) {
+      mqttDiscoveryReportFailure(suffix, "TOPIC_BUILD", "TELEMETRY_SUFFIX_TOO_LONG",
+                                 nullptr, value.c_str(), value.length());
+      return;
+    }
+    mqttPublishRetainedText(stateSuffix, value.c_str(), suffix, false);
   };
   pub("indoor_temperature", sensorValid ? String(indoorTempC,1) : String("unknown"));
   pub("indoor_humidity", sensorValid ? String(indoorHumidity,1) : String("unknown"));
@@ -2516,20 +2606,26 @@ bool mqttConnectNow() {
   mqttClient.setServer(host.c_str(), port);
   String clientId = "GoodWin-" + String((uint32_t)ESP.getEfuseMac(), HEX);
   const bool auth = !user.isEmpty();
+  char availabilityTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  if (!mqttBuildTopicFixed(availabilityTopic, sizeof(availabilityTopic), "availability")) {
+    setMqttStatus("Ошибка MQTT: не удалось сформировать availability topic");
+    LOG_ERR("[MQTT] connect aborted: invalid availability topic");
+    return false;
+  }
   const bool ok = mqttClient.connect(clientId.c_str(), auth ? user.c_str() : nullptr,
-    auth ? password.c_str() : nullptr, mqttTopic("availability").c_str(), 0, true, "offline");
+    auth ? password.c_str() : nullptr, availabilityTopic, 0, true, "offline");
   if (ok) {
     setMqttStatus("Подключено");
     LOG_M("MQTT connected to %s:%u", host.c_str(), port);
-    mqttClient.publish(mqttTopic("availability").c_str(), "online", true);
-    mqttClient.subscribe(mqttTopic("light/set").c_str());
-    mqttClient.subscribe(mqttTopic("speed/set").c_str());
-    mqttClient.subscribe(mqttTopic("effect/set").c_str());
-    mqttClient.subscribe(mqttTopic("display/set").c_str());
-    mqttClient.subscribe(mqttTopic("display_brightness/set").c_str());
-    mqttClient.subscribe(mqttTopic("screen_layout/set").c_str());
-    mqttClient.subscribe(mqttTopic("screensaver/set").c_str());
-    mqttClient.subscribe(mqttTopic("display_orientation/set").c_str());
+    mqttPublishRetainedText("availability", "online", "availability", false);
+    mqttSubscribeFixed("light/set");
+    mqttSubscribeFixed("speed/set");
+    mqttSubscribeFixed("effect/set");
+    mqttSubscribeFixed("display/set");
+    mqttSubscribeFixed("display_brightness/set");
+    mqttSubscribeFixed("screen_layout/set");
+    mqttSubscribeFixed("screensaver/set");
+    mqttSubscribeFixed("display_orientation/set");
     mqttDiscoveryPending = !publishMqttDiscovery();
     mqttDiscoveryRetryAt = millis() + 30000UL;
     if (mqttDiscoveryPending) LOG_ERR("MQTT Discovery incomplete; retry scheduled in 30 seconds");
@@ -2549,7 +2645,7 @@ void mqttWorkerTask(void *parameter) {
     const uint32_t startedAt = millis();
     if (mqttReconfigureRequested) {
       mqttReconfigureRequested = false;
-      if (mqttClient.connected()) { mqttClient.publish(mqttTopic("availability").c_str(), "offline", true); mqttClient.disconnect(); }
+      if (mqttClient.connected()) { mqttPublishRetainedText("availability", "offline", "availability", false); mqttClient.disconnect(); }
       loadMqttConfig();
       if (mqttConfigured()) { mqttClient.setServer(mqttHost.c_str(), mqttPort); setMqttStatus("Настройки обновлены · подключение…"); }
       else setMqttStatus(mqttEnabled ? "Укажи адрес брокера" : "MQTT выключен");
