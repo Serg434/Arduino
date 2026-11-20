@@ -3059,11 +3059,8 @@ void startPortal() {
   portalMatterStarted = false;
 
   LOG_W("Starting Wi-Fi setup portal asynchronously; saved credentials will be retried");
-  WiFi.setAutoReconnect(false);
-  WiFi.disconnect(false, false);
-  WiFi.setHostname(WIFI_HOSTNAME);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  // Wi-Fi driver and netifs are initialized by updatePortalIndicator().
+  // Do not call disconnect/setSleep/setTxPower before WiFi.mode() succeeds.
 
   portalLedLastToggle = 0;
   portalLedState = false;
@@ -3075,16 +3072,24 @@ bool startAccessPoint(bool recoveryMode) {
   const IPAddress gateway(192, 168, 4, 1);
   const IPAddress subnet(255, 255, 255, 0);
 
-  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
-    LOG_ERR("softAPConfig failed");
+  // Initialize/confirm the requested mode before touching the AP netif.
+  const wifi_mode_t requestedMode = (recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP;
+  const wifi_mode_t modeBefore = WiFi.getMode();
+  const bool modeOk = WiFi.mode(requestedMode);
+  const wifi_mode_t modeAfter = WiFi.getMode();
+  if (!modeOk || modeAfter != requestedMode) {
+    LOG_ERR("Wi-Fi mode transition failed: requested=%u before=%u result=%s after=%u status=%u",
+      (unsigned)requestedMode, (unsigned)modeBefore, modeOk ? "true" : "false",
+      (unsigned)modeAfter, (unsigned)WiFi.status());
+    return false;
   }
 
-  // The caller has already staged the interface transition and allowed the
-  // driver to settle; do not block here waiting for AP startup.
-  WiFi.mode((recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  if (!WiFi.softAPConfig(apIP, gateway, subnet)) LOG_ERR("softAPConfig retry failed");
+  if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep");
+  if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power");
+  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
+    LOG_ERR("softAPConfig failed after Wi-Fi mode initialization; mode=%u", (unsigned)WiFi.getMode());
+    return false;
+  }
   const bool ok = WiFi.softAP(AP_NAME, AP_PASSWORD, 1, false, 4);
   if (ok) {
     const IPAddress ip = WiFi.softAPIP();
@@ -3112,7 +3117,26 @@ void updatePortalIndicator() {
   // Non-blocking AP startup: disconnect -> AP+STA -> AP start, with timed
   // settling intervals between Wi-Fi driver transitions.
   if (portalApStage == 1 && now - portalApStageAt >= 150) {
-    WiFi.mode(WIFI_AP_STA);
+    const wifi_mode_t modeBefore = WiFi.getMode();
+    const bool modeOk = WiFi.mode(WIFI_AP_STA);
+    const wifi_mode_t modeAfter = WiFi.getMode();
+    LOG_W("Wi-Fi driver init: requested=AP+STA before=%u result=%s after=%u status=%u heap=%u largest=%u",
+      (unsigned)modeBefore, modeOk ? "true" : "false", (unsigned)modeAfter,
+      (unsigned)WiFi.status(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+    if (!modeOk || modeAfter != WIFI_AP_STA) {
+      LOG_ERR("Wi-Fi driver is not ready; portal AP initialization will retry");
+      portalApStage = 0;
+      lastPortalApRetryAt = now;
+      return;
+    }
+
+    WiFi.setAutoReconnect(false);
+    const bool disconnectOk = WiFi.disconnect(false, false);
+    if (!disconnectOk) LOG_W("Wi-Fi disconnect returned false during clean portal startup");
+    if (!WiFi.setHostname(WIFI_HOSTNAME)) LOG_ERR("Could not set Wi-Fi hostname");
+    if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep");
+    if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power");
+
     portalApStage = 2;
     portalApStageAt = now;
     return;
@@ -3131,9 +3155,18 @@ void updatePortalIndicator() {
     return;
   }
   if (portalApStage == 3 && now - portalApStageAt >= 500) {
-    WiFi.mode(WIFI_AP_STA);
-    WiFi.setSleep(false);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    const bool modeOk = WiFi.mode(WIFI_AP_STA);
+    const wifi_mode_t modeAfter = WiFi.getMode();
+    LOG_W("Wi-Fi driver restart result=%s mode=%u status=%u",
+      modeOk ? "true" : "false", (unsigned)modeAfter, (unsigned)WiFi.status());
+    if (!modeOk || modeAfter != WIFI_AP_STA) {
+      LOG_ERR("Wi-Fi driver restart did not restore AP+STA mode; retrying later");
+      portalApStage = 0;
+      lastPortalApRetryAt = now;
+      return;
+    }
+    if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep after restart");
+    if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power after restart");
     portalApStage = 4;
     portalApStageAt = now;
     return;
@@ -3161,7 +3194,14 @@ void updatePortalIndicator() {
   if (!setupAPStarted && portalApStage == 0 && now - lastPortalApRetryAt >= 5000) {
     lastPortalApRetryAt = now;
     LOG_W("Retrying setup AP start");
-    WiFi.mode(WIFI_AP_STA);
+    const bool modeOk = WiFi.mode(WIFI_AP_STA);
+    const wifi_mode_t modeAfter = WiFi.getMode();
+    LOG_W("Setup AP retry mode result=%s mode=%u status=%u",
+      modeOk ? "true" : "false", (unsigned)modeAfter, (unsigned)WiFi.status());
+    if (!modeOk || modeAfter != WIFI_AP_STA) {
+      LOG_ERR("Setup AP retry aborted: Wi-Fi driver is not in AP+STA mode");
+      return;
+    }
     portalApStage = 5;
     portalApStageAt = now;
     return;
