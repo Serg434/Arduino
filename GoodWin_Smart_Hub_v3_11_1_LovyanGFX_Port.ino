@@ -3210,6 +3210,57 @@ void updatePortalIndicator() {
   }
 }
 
+void startConnectedServices() {
+  if (connectedServicesStarted || WiFi.status() != WL_CONNECTED) return;
+  connectedServicesStarted = true;
+  startupWifiPending = false;
+  WiFi.setAutoReconnect(true);
+  LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
+    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
+    WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
+// Wi-Fi STA is already connected by serviceStartupWiFi().
+  // Wi-Fi association belongs to the Hub asynchronous state machine. Matter
+  // starts only after STA is connected; avoid the library's blocking Wi-Fi helper.
+  LOG_W("Starting Matter on the established Wi-Fi STA interface");
+  startMatter();
+  hubLogResourceSnapshot("matter-started");
+  setupMqtt();
+  hubLogResourceSnapshot("mqtt-started");
+  startWeatherTask();
+  hubLogResourceSnapshot("weather-task-scheduled");
+  if (MDNS.begin(MDNS_HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    LOG_W("mDNS: http://%s.local", MDNS_HOSTNAME);
+  } else {
+    LOG_ERR("mDNS startup failed");
+  }
+  if (String(OTA_PASSWORD) != "CHANGE_ME_GW_OTA_2026" && strlen(OTA_PASSWORD) >= 10) {
+    ArduinoOTA.setHostname(MDNS_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.begin();
+    LOG_W("OTA enabled; hostname=%s", MDNS_HOSTNAME);
+  } else {
+    LOG_W("OTA disabled: set a unique OTA_PASSWORD (10+ chars) in sketch");
+  }
+  LOG_B("Initialization complete");
+}
+
+void serviceStartupWiFi() {
+  if (!startupWifiPending || connectedServicesStarted) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    startConnectedServices();
+    return;
+  }
+  if ((uint32_t)(millis() - startupWifiStartedAt) < 20000UL) return;
+
+  startupWifiPending = false;
+  LOG_ERR("Wi-Fi connection timed out after 20000 ms; retaining credentials and entering setup portal");
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  startPortal();
+  startWeatherTask();
+}
+
 bool connectSavedWiFi() {
   netPrefs.begin("netcfg", true);
   wifiSSID = netPrefs.getString("ssid", "");
