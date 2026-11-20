@@ -3378,6 +3378,23 @@ void processWiFiRecovery() {
   }
 }
 
+// Enable IPv6 on the STA before WiFi.begin(). The original ESP32 Arduino build
+// uses on-network Matter commissioning (CHIPoBLE is not available).
+static void enableMatterIPv6ForSTA() {
+#if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
+  static bool configured = false;
+  if (configured) return;
+  configured = WiFi.enableIPv6(true);
+  LOG_M("Matter IPv6 pre-association setup: %s", configured ? "OK" : "FAILED; will retry");
+#else
+  static bool warningPrinted = false;
+  if (!warningPrinted) {
+    LOG_ERR("Matter IPv6 support is disabled in this ESP32 build");
+    warningPrinted = true;
+  }
+#endif
+}
+
 // BOOT button: short click = next effect; 5-10 s = Wi-Fi reset;
 // 10 s or longer = full Matter + Wi-Fi factory reset.
 void processBootButton() {
