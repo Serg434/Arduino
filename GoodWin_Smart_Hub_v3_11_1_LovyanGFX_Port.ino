@@ -4176,6 +4176,12 @@ static void drawHubScreenSaverFrame() {
 
   drawSaverCanvasBackdrop(cv, w, h);
 
+  // Branded savers reserve fixed top/bottom chrome bands. Clip every animated
+  // primitive to the central viewport so particles cannot paint over the chrome.
+  const int16_t saverTop = hubSaverCanvasFullScreen ? 0 : 23;
+  const int16_t saverBottom = hubSaverCanvasFullScreen ? h : h - 21;
+  if (!hubSaverCanvasFullScreen) cv.setClipRect(0, saverTop, w, saverBottom - saverTop);
+
   switch (hubSaverId) {
     case 1: { // Minimal digital clock, refreshed only when the second changes.
       if ((uint32_t)(now - hubSaverLastValueAt) < 1000UL) {
@@ -4201,9 +4207,11 @@ static void drawHubScreenSaverFrame() {
       saverDotX += saverDotVX;
       saverDotY += saverDotVY;
       if (saverDotX < saverDotRadius + 7 || saverDotX > w - saverDotRadius - 7) saverDotVX = -saverDotVX;
-      if (saverDotY < saverDotRadius + 7 || saverDotY > h - saverDotRadius - 7) saverDotVY = -saverDotVY;
+      const int16_t dotMinY = (int16_t)(saverTop + saverDotRadius + 7);
+      const int16_t dotMaxY = (int16_t)(saverBottom - saverDotRadius - 7);
+      if (saverDotY < dotMinY || saverDotY > dotMaxY) saverDotVY = -saverDotVY;
       saverDotX = constrain(saverDotX, (int16_t)(saverDotRadius + 7), (int16_t)(w - saverDotRadius - 7));
-      saverDotY = constrain(saverDotY, (int16_t)(saverDotRadius + 7), (int16_t)(h - saverDotRadius - 7));
+      saverDotY = constrain(saverDotY, dotMinY, dotMaxY);
       break;
     }
 
@@ -4864,11 +4872,10 @@ static void drawHubScreenSaverFrame() {
   }
 
   if (presentFrame) {
-    // Present the complete persistent canvas in one transaction.
-    cv.pushSprite(0, 0);
-    hubDisplay.waitDMA();
-    // Branded chrome is overlaid after the full-frame transfer so it remains visible.
     if (!hubSaverCanvasFullScreen) {
+      // Restore the full canvas clip, then compose the chrome INTO this frame.
+      // A single DMA transfer now contains animation, header and footer together.
+      cv.clearClipRect();
       static const char *SAVER_TITLES[32] = {
         "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
         "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
@@ -4877,18 +4884,21 @@ static void drawHubScreenSaverFrame() {
         "3D PIPES CLASSIC", "3D MAZE CLASSIC", "UE5 / NEON RIFT", "PLASMA FIELD", "LAVA LAMP",
         "VORTEX TUNNEL", "RAIN ON GLASS", "PIXEL FIRE"
       };
-      hubDisplay.fillRect(0, 0, w, 23, HUB_BG);
-      hubDisplay.fillRect(0, h - 21, w, 21, HUB_BG);
-      hubDisplay.setTextSize(1);
-      hubDisplay.setTextColor(HUB_CYAN, HUB_BG);
-      hubDisplay.setCursor(7, 7);
-      hubDisplay.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
-      hubDisplay.drawFastHLine(7, 19, w - 14, HUB_LINE);
-      hubDisplay.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
-      hubDisplay.setTextColor(HUB_MUTED, HUB_BG);
-      hubDisplay.setCursor(7, h - 11);
-      hubDisplay.print("GOODWIN  /  ESP32");
+      cv.fillRect(0, 0, w, 23, HUB_BG);
+      cv.fillRect(0, h - 21, w, 21, HUB_BG);
+      cv.setTextSize(1);
+      cv.setTextColor(HUB_CYAN, HUB_BG);
+      cv.setCursor(7, 7);
+      cv.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
+      cv.drawFastHLine(7, 19, w - 14, HUB_LINE);
+      cv.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
+      cv.setTextColor(HUB_MUTED, HUB_BG);
+      cv.setCursor(7, h - 11);
+      cv.print("GOODWIN  /  ESP32");
     }
+    // One atomic transfer: no separate physical-display chrome pass.
+    cv.pushSprite(0, 0);
+    hubDisplay.waitDMA();
   }
 
   const uint32_t drawUs = micros() - frameStartedUs;
