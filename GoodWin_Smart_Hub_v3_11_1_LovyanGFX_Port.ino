@@ -3059,23 +3059,46 @@ void startPortal() {
   portalMode = true;
   matterStarted = false;
   recoveryAPStarted = false;
-  recoveryApStage = 0;
   setupAPStarted = false;
-  portalApStage = 1;
-  portalApStageAt = millis();
-  portalLastStaAttemptAt = portalApStageAt;
+  portalLastStaAttemptAt = 0;
   portalStaAttemptStartedAt = 0;
   portalStaAttemptInProgress = false;
-  portalStaRetryPending = false;
   portalWifiConnectedSince = 0;
   portalMatterStarted = false;
 
-  LOG_W("Starting Wi-Fi setup portal asynchronously; saved credentials will be retried");
-  // setHostname() only stages the hostname in NetworkManager; WiFi.mode()
-  // applies it when the STA netif is created. Other driver operations wait
-  // until updatePortalIndicator() confirms successful mode initialization.
-  if (!WiFi.setHostname(WIFI_HOSTNAME)) LOG_ERR("Could not stage Wi-Fi hostname");
+  LOG_W("Starting Wi-Fi setup portal in AP+STA mode; saved credentials will be retried");
 
+  // Keep both interfaces enabled: the setup AP remains available while STA
+  // periodically retries the saved router credentials.
+  WiFi.setAutoReconnect(false); // We schedule retries ourselves to avoid overlapping attempts.
+  WiFi.disconnect(false, false);
+  delay(150);
+  WiFi.mode(WIFI_AP_STA);
+  delay(300);
+  WiFi.setHostname(WIFI_HOSTNAME);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+
+  if (!startAccessPoint(true)) {
+    LOG_ERR("First AP+STA start failed; restarting Wi-Fi driver and retrying");
+    WiFi.mode(WIFI_OFF);
+    delay(500);
+    WiFi.mode(WIFI_AP_STA);
+    delay(400);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    if (!startAccessPoint(true)) {
+      LOG_ERR("Setup AP could not be started after retry; will retry in loop");
+      lastPortalApRetryAt = millis();
+    } else {
+      setupAPStarted = true;
+    }
+  } else {
+    setupAPStarted = true;
+  }
+
+  // Start the first background STA attempt shortly after the AP is ready.
+  portalLastStaAttemptAt = millis() - 15000;
   portalLedLastToggle = 0;
   portalLedState = false;
   writeLEDLevel(0);
@@ -3086,26 +3109,21 @@ bool startAccessPoint(bool recoveryMode) {
   const IPAddress gateway(192, 168, 4, 1);
   const IPAddress subnet(255, 255, 255, 0);
 
-  // Initialize/confirm the requested mode before touching the AP netif.
-  const wifi_mode_t requestedMode = (recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP;
-  const wifi_mode_t modeBefore = WiFi.getMode();
-  const bool modeOk = WiFi.mode(requestedMode);
-  const wifi_mode_t modeAfter = WiFi.getMode();
-  if (!modeOk || modeAfter != requestedMode) {
-    LOG_ERR("Wi-Fi mode transition failed: requested=%u before=%u result=%s after=%u status=%u",
-      (unsigned)requestedMode, (unsigned)modeBefore, modeOk ? "true" : "false",
-      (unsigned)modeAfter, (unsigned)WiFi.status());
-    return false;
+  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
+    LOG_ERR("softAPConfig failed");
   }
 
-  if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep");
-  if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power");
-  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
-    LOG_ERR("softAPConfig failed after Wi-Fi mode initialization; mode=%u", (unsigned)WiFi.getMode());
-    return false;
-  }
+  // Fully reset the AP interface before creating it. This avoids stale STA/AP state
+  // after a failed association to a previously saved router.
+  WiFi.softAPdisconnect(true);
+  delay(180);
+  WiFi.mode((recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP);
+  WiFi.setSleep(false);
+  WiFi.setTxPower(WIFI_POWER_19_5dBm);
+  if (!WiFi.softAPConfig(apIP, gateway, subnet)) LOG_ERR("softAPConfig retry failed");
   const bool ok = WiFi.softAP(AP_NAME, AP_PASSWORD, 1, false, 4);
   if (ok) {
+    delay(250);
     const IPAddress ip = WiFi.softAPIP();
     if (!captiveDnsStarted) {
       captiveDnsStarted = captiveDns.start(53, "*", apIP);
@@ -3128,119 +3146,17 @@ void updatePortalIndicator() {
     writeLEDLevel(portalLedState ? 35 : 0);
   }
 
-  // Non-blocking AP startup: disconnect -> AP+STA -> AP start, with timed
-  // settling intervals between Wi-Fi driver transitions.
-  if (portalApStage == 1 && now - portalApStageAt >= 150) {
-    const wifi_mode_t modeBefore = WiFi.getMode();
-    const bool modeOk = WiFi.mode(WIFI_AP_STA);
-    // WiFi.mode() is synchronous. If it reports failure, do not waste time
-    // polling a state transition that cannot complete. If it reports success
-    // but the public mode has not caught up, wait only as long as necessary.
-    const bool modeReady = modeOk &&
-      (WiFi.getMode() == WIFI_AP_STA || waitForWiFiMode(WIFI_AP_STA, 250UL));
-    const wifi_mode_t modeAfter = WiFi.getMode();
-    LOG_W("Wi-Fi driver init: requested=AP+STA before=%u result=%s ready=%s after=%u status=%u heap=%u largest=%u",
-      (unsigned)modeBefore, modeOk ? "true" : "false", modeReady ? "true" : "false",
-      (unsigned)modeAfter, (unsigned)WiFi.status(), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    if (!modeOk || !modeReady || modeAfter != WIFI_AP_STA) {
-      LOG_ERR("Wi-Fi driver is not ready; portal AP initialization will retry");
-      portalApStage = 0;
-      lastPortalApRetryAt = now;
-      return;
-    }
-
-    WiFi.setAutoReconnect(false);
-    const bool disconnectOk = WiFi.disconnect(false, false);
-    if (!disconnectOk) LOG_W("Wi-Fi disconnect returned false during clean portal startup");
-    if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep");
-    if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power");
-
-    portalApStage = 2;
-    portalApStageAt = now;
-    return;
-  }
-  if (portalApStage == 2 && now - portalApStageAt >= 300) {
-    if (startAccessPoint(true)) {
-      setupAPStarted = true;
-      portalLastStaAttemptAt = now - 15000UL;
-      portalApStage = 0;
-    } else {
-      LOG_ERR("First AP+STA start failed; scheduling Wi-Fi driver restart");
-      WiFi.mode(WIFI_OFF);
-      portalApStage = 3;
-      portalApStageAt = now;
-    }
-    return;
-  }
-  if (portalApStage == 3 && now - portalApStageAt >= 500) {
-    const bool modeOk = WiFi.mode(WIFI_AP_STA);
-    const wifi_mode_t modeAfter = WiFi.getMode();
-    LOG_W("Wi-Fi driver restart result=%s mode=%u status=%u",
-      modeOk ? "true" : "false", (unsigned)modeAfter, (unsigned)WiFi.status());
-    if (!modeOk || modeAfter != WIFI_AP_STA) {
-      LOG_ERR("Wi-Fi driver restart did not restore AP+STA mode; retrying later");
-      portalApStage = 0;
-      lastPortalApRetryAt = now;
-      return;
-    }
-    if (!WiFi.setSleep(false)) LOG_ERR("Could not disable Wi-Fi modem sleep after restart");
-    if (!WiFi.setTxPower(WIFI_POWER_19_5dBm)) LOG_ERR("Could not set Wi-Fi TX power after restart");
-    portalApStage = 4;
-    portalApStageAt = now;
-    return;
-  }
-  if (portalApStage == 4 && now - portalApStageAt >= 400) {
-    setupAPStarted = startAccessPoint(true);
-    if (!setupAPStarted) {
-      LOG_ERR("Setup AP retry after driver restart failed");
-      lastPortalApRetryAt = now;
-    } else {
-      portalLastStaAttemptAt = now - 15000UL;
-    }
-    portalApStage = 0;
-    return;
-  }
-  if (portalApStage == 5 && now - portalApStageAt >= 300) {
-    setupAPStarted = startAccessPoint(true);
-    if (setupAPStarted) portalLastStaAttemptAt = now - 15000UL;
-    portalApStage = 0;
-    return;
-  }
-
   // Keep the setup AP alive even if STA reconnects. Retry saved credentials
   // every 15 seconds, never starting a second attempt while already connected.
-  if (!setupAPStarted && portalApStage == 0 && now - lastPortalApRetryAt >= 5000) {
+  if (!setupAPStarted && now - lastPortalApRetryAt >= 5000) {
     lastPortalApRetryAt = now;
     LOG_W("Retrying setup AP start");
-    const bool modeOk = WiFi.mode(WIFI_AP_STA);
-    const wifi_mode_t modeAfter = WiFi.getMode();
-    LOG_W("Setup AP retry mode result=%s mode=%u status=%u",
-      modeOk ? "true" : "false", (unsigned)modeAfter, (unsigned)WiFi.status());
-    if (!modeOk || modeAfter != WIFI_AP_STA) {
-      LOG_ERR("Setup AP retry aborted: Wi-Fi driver is not in AP+STA mode");
-      return;
-    }
-    portalApStage = 5;
-    portalApStageAt = now;
-    return;
-  }
-
-  if (portalStaRetryPending && WiFi.status() != WL_CONNECTED) {
-    if ((int32_t)(now - portalStaRetryReadyAt) >= 0) {
-      portalStaRetryPending = false;
-      portalLastStaAttemptAt = now;
-      portalStaAttemptStartedAt = now;
-      portalStaAttemptInProgress = true;
-      LOG_W("Retrying saved Wi-Fi: %s", wifiSSID.c_str());
-      WiFi.setHostname(WIFI_HOSTNAME);
-      enableMatterIPv6ForSTA();
-      WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-    }
-    return;
+    WiFi.mode(WIFI_AP_STA);
+    delay(100);
+    setupAPStarted = startAccessPoint(true);
   }
 
   if (WiFi.status() == WL_CONNECTED) {
-    portalStaRetryPending = false;
     portalStaAttemptInProgress = false;
     if (portalWifiConnectedSince == 0) {
       portalWifiConnectedSince = now;
@@ -3257,7 +3173,9 @@ void updatePortalIndicator() {
       WiFi.mode(WIFI_STA);
       portalMode = false;
       setupAPStarted = false;
-      // Wi-Fi STA is already connected. Start Matter without waiting for a controller.
+#if !CONFIG_ENABLE_CHIPOBLE
+      matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
+#endif
       startMatter();
       setupMqtt();
       if (MDNS.begin(MDNS_HOSTNAME)) {
@@ -3279,92 +3197,17 @@ void updatePortalIndicator() {
   if (attemptTimedOut || canStartAttempt) {
     if (attemptTimedOut) {
       LOG_W("Saved Wi-Fi attempt timed out; scheduling another attempt");
+      // Disconnect only the STA interface; keep ESP-SETUP running.
       WiFi.disconnect(false, false);
-      portalStaAttemptInProgress = false;
-      portalStaRetryPending = true;
-      portalStaRetryReadyAt = now + 80UL;
-      return;
+      delay(80);
     }
     portalLastStaAttemptAt = now;
     portalStaAttemptStartedAt = now;
     portalStaAttemptInProgress = true;
     LOG_W("Retrying saved Wi-Fi: %s", wifiSSID.c_str());
     WiFi.setHostname(WIFI_HOSTNAME);
-    enableMatterIPv6ForSTA();
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
   }
-}
-
-
-// Enable IPv6 on the STA before WiFi.begin(). The original ESP32 Arduino build
-// uses on-network Matter commissioning (CHIPoBLE is not available).
-static void enableMatterIPv6ForSTA() {
-#if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
-  static bool configured = false;
-  if (configured) return;
-  configured = WiFi.enableIPv6(true);
-  LOG_M("Matter IPv6 pre-association setup: %s", configured ? "OK" : "FAILED; will retry");
-#else
-  static bool warningPrinted = false;
-  if (!warningPrinted) {
-    LOG_ERR("Matter IPv6 support is disabled in this ESP32 build");
-    warningPrinted = true;
-  }
-#endif
-}
-
-// Complete network-dependent startup only after the STA link is established.
-// This keeps the main setup path responsive and prevents Matter from starting
-// against a missing router.
-void startConnectedServices() {
-  if (connectedServicesStarted || WiFi.status() != WL_CONNECTED) return;
-  connectedServicesStarted = true;
-  startupWifiPending = false;
-  WiFi.setAutoReconnect(true);
-  LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
-    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
-    WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
-// Wi-Fi STA is already connected by serviceStartupWiFi().
-  // Wi-Fi association belongs to the Hub asynchronous state machine. Matter
-  // starts only after STA is connected; avoid the library's blocking Wi-Fi helper.
-  LOG_W("Starting Matter on the established Wi-Fi STA interface");
-  startMatter();
-  hubLogResourceSnapshot("matter-started");
-  setupMqtt();
-  hubLogResourceSnapshot("mqtt-started");
-  startWeatherTask();
-  hubLogResourceSnapshot("weather-task-scheduled");
-  if (MDNS.begin(MDNS_HOSTNAME)) {
-    MDNS.addService("http", "tcp", 80);
-    LOG_W("mDNS: http://%s.local", MDNS_HOSTNAME);
-  } else {
-    LOG_ERR("mDNS startup failed");
-  }
-  if (String(OTA_PASSWORD) != "CHANGE_ME_GW_OTA_2026" && strlen(OTA_PASSWORD) >= 10) {
-    ArduinoOTA.setHostname(MDNS_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-    ArduinoOTA.begin();
-    LOG_W("OTA enabled; hostname=%s", MDNS_HOSTNAME);
-  } else {
-    LOG_W("OTA disabled: set a unique OTA_PASSWORD (10+ chars) in sketch");
-  }
-  LOG_B("Initialization complete");
-}
-
-void serviceStartupWiFi() {
-  if (!startupWifiPending || connectedServicesStarted) return;
-  if (WiFi.status() == WL_CONNECTED) {
-    startConnectedServices();
-    return;
-  }
-  if ((uint32_t)(millis() - startupWifiStartedAt) < 20000UL) return;
-
-  startupWifiPending = false;
-  LOG_ERR("Wi-Fi connection timed out after 20000 ms; retaining credentials and entering setup portal");
-  WiFi.setAutoReconnect(false);
-  WiFi.disconnect(false, false);
-  startPortal();
-  startWeatherTask();
 }
 
 bool connectSavedWiFi() {
@@ -6819,15 +6662,19 @@ void setup() {
   bootButtonLastRaw = bootButtonStable;
   bootButtonDebounceAt = millis();
 
-  // Start HTTP immediately; it is serviced while STA association runs.
-  setupWebServer();
-  hubLogResourceSnapshot("http-started");
-
   if (!connectSavedWiFi()) {
+    // Match the pre-async startup order for the setup-portal path:
+    // initialize Wi-Fi/AP first, then open the HTTP server.
     startPortal();
+    setupWebServer();
+    hubLogResourceSnapshot("http-started");
     startWeatherTask();
     return;
   }
+
+  // STA association is asynchronous, but HTTP starts immediately afterward.
+  setupWebServer();
+  hubLogResourceSnapshot("http-started");
   // The connection and Matter/MQTT startup continue from loop() without
   // blocking the display, HTTP server, button handling or diagnostics.
 }
