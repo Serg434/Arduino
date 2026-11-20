@@ -457,6 +457,9 @@ bool mqttEnabled = false;
 String mqttLastError = "Не настроен";
 
 bool matterStarted = false;
+static bool matterIsCommissioned() {
+  return matterStarted && Matter.isDeviceCommissioned();
+}
 bool portalMode = false;
 volatile bool lightOn = false;
 volatile bool ledState = false;
@@ -1180,7 +1183,7 @@ body[data-theme="light"] .hub-switch{background:#fff;color:#263650;border-color:
 </style>
 </head>
 <body><div class="app">
-<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.3 DEV</div></div></div><div class="header-tools"><a class="btn" href="/dashboard" style="text-decoration:none;display:inline-flex;align-items:center">◈ Dashboard</a><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
+<header class="header"><div class="brand"><div class="logo">✦</div><div><div class="brand-name">GoodWin Smart Hub</div><div class="brand-sub">SMART HOME CONTROL · FIRMWARE 3.11.4 DEV</div></div></div><div class="header-tools"><a class="btn" href="/dashboard" style="text-decoration:none;display:inline-flex;align-items:center">◈ Dashboard</a><div class="theme-switch" aria-label="Тема интерфейса"><button type="button" id="themeAuto" title="Авто">A</button><button type="button" id="themeLight" title="Светлая">☼</button><button type="button" id="themeDark" title="Тёмная">☾</button></div><div class="connection"><span class="dot" id="connectionDot"></span><span id="connectionText">ONLINE</span></div></div></header>
 <div class="grid-main">
 <section class="card hero"><div class="eyebrow">Освещение · ESP32</div><div class="hero-icon" id="heroIcon">💡</div><h1 id="lightState">Загрузка...</h1><div class="hero-description" id="lightDescription">Подключение к устройству</div><div class="dimmer"><div class="dimmer-head"><span>ЯРКОСТЬ</span><strong class="dimmer-value" id="brightnessValue">80%</strong></div><input id="brightnessSlider" type="range" min="1" max="100" value="80" step="1" aria-label="Яркость светодиода"><div class="dimmer-foot"><span>МИНИМУМ</span><span>ПЛАВНОЕ PWM-УПРАВЛЕНИЕ</span><span>100%</span></div></div><div class="dimmer"><div class="dimmer-head"><span>СКОРОСТЬ ЭФФЕКТОВ</span><strong class="dimmer-value" id="speedValue">100%</strong></div><input id="speedSlider" type="range" min="25" max="300" value="100" step="5" aria-label="Скорость эффектов"><div class="dimmer-foot"><span>МЕДЛЕННО</span><span>ТЕМП АНИМАЦИИ</span><span>БЫСТРО</span></div></div><div class="power-actions"><button class="btn btn-primary" onclick="setPower(true)">Включить</button><button class="btn" onclick="setPower(false)">Выключить</button></div></section>
 <section class="card side-status"><div class="section-head"><h2>Устройство</h2><span>LIVE STATUS</span></div><div class="status-item"><div class="status-label">Wi-Fi</div><div class="status-value" id="wifiStatus">—</div></div><div class="status-item"><div class="status-label">IP-адрес</div><div class="status-value" id="ipStatus">—</div></div><div class="status-item"><div class="status-label">Matter</div><div class="status-value" id="matterStatus">—</div></div><div class="status-item"><div class="status-label">Сопряжение</div><div class="status-value" id="commissionStatus">—</div></div></section>
@@ -2170,7 +2173,7 @@ void handleApi() {
   json += "\"rssi\":"; json += String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127); json += ",";
   json += "\"matter\":\""; json += (matterStarted ? "RUNNING" : "NOT STARTED"); json += "\",";
   json += "\"commissioned\":";
-  json += (matterStarted && Matter.isDeviceCommissioned() ? "true" : "false");
+  json += (matterStarted && matterIsCommissioned() ? "true" : "false");
   json += ",\"code\":\""; json += pairingCode; json += "\",";
   json += "\"qr\":\""; json += pairingQR; json += "\",";
   json += "\"mqttEnabled\":" + String(mqttEnabled ? "true" : "false") + ",";
@@ -2532,8 +2535,8 @@ void updatePortalIndicator() {
       WiFi.mode(WIFI_STA);
       portalMode = false;
       setupAPStarted = false;
-// Wi-Fi STA is already connected by the Arduino WiFi layer.
-      // Keep Matter startup identical to the last stable firmware path.
+      enableMatterIPv6();
+      // Wi-Fi STA is already connected. Start Matter without waiting for a controller.
       startMatter();
       setupMqtt();
       if (MDNS.begin(MDNS_HOSTNAME)) {
@@ -2571,6 +2574,17 @@ void updatePortalIndicator() {
 }
 
 
+// Enable IPv6 on the already-connected STA before starting Matter. The original
+// ESP32 Arduino build uses on-network commissioning (CHIPoBLE is not available).
+static void enableMatterIPv6() {
+#if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
+  const bool enabled = WiFi.enableIPv6(true);
+  LOG_M("Matter IPv6 link-local enable: %s", enabled ? "OK" : "FAILED");
+#else
+  LOG_ERR("Matter IPv6 support is disabled in this ESP32 build");
+#endif
+}
+
 // Complete network-dependent startup only after the STA link is established.
 // This keeps the main setup path responsive and prevents Matter from starting
 // against a missing router.
@@ -2586,6 +2600,7 @@ void startConnectedServices() {
   // Do not reconfigure the STA through Matter before Matter.begin(); this
   // caused a fabric-removal/restart loop on the affected ESP32 build.
   LOG_W("Starting Matter on the established Wi-Fi STA interface");
+  enableMatterIPv6();
   startMatter();
   hubLogResourceSnapshot("matter-started");
   setupMqtt();
@@ -2999,9 +3014,16 @@ void startMatter() {
     sensorValid ? indoorTempC : NAN,
     sensorValid ? indoorHumidity : NAN);
 
+  // Matter.begin() starts the protocol stack asynchronously. The stock readiness
+  // helper blocks for up to five minutes and reboots an uncommissioned node.
   Matter.begin();
-  matterWaitUntilReady();
-  matterStarted = true;
+  pairingCode = Matter.getManualPairingCode();
+  pairingQR = matterPayloadFromUrl(Matter.getOnboardingQRCodeUrl());
+  matterStarted = !pairingCode.isEmpty();
+  if (!matterStarted) {
+    LOG_ERR("Matter stack did not start (pairing code unavailable); Hub continues without Matter");
+    return;
+  }
 
   // Publish first real DHT22 sample after Matter stack startup.
   if (sensorValid && climateEndpointReady) {
@@ -3018,13 +3040,11 @@ void startMatter() {
     LOG_ERR("Climate endpoint not ready or DHT22 has no valid startup sample");
   }
 
-  pairingCode = Matter.getManualPairingCode();
-  pairingQR = matterPayloadFromUrl(Matter.getOnboardingQRCodeUrl());
   if (pairingQR.isEmpty()) LOG_ERR("Could not extract Matter QR payload; use manual pairing code");
 
   LOG_M("Started; name=%s", DEVICE_NAME);
   LOG_M("Pairing code: %s", pairingCode.c_str());
-  LOG_M("Commissioned: %s", Matter.isDeviceCommissioned() ? "YES" : "NO");
+  LOG_M("Commissioned: %s", matterIsCommissioned() ? "YES" : "NO");
 
   effectStartedAt = millis();
   randomTimer = millis();
@@ -3311,7 +3331,7 @@ static void drawExtendedLandscapeValues() {
       break;
     case 24: case 38:
       drawValueBox(10,52,62,22,black,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER ON":"MATTER OFF");
-      drawValueBox(87,52,62,22,black,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"PAIRED":"UNPAIRED");
+      drawValueBox(87,52,62,22,black,matterIsCommissioned()?HUB_GREEN:HUB_ORANGE,1,matterIsCommissioned()?"PAIRED":"UNPAIRED");
       drawValueBox(10,101,140,14,black,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"MQTT CONNECTED":"MQTT DISCONNECTED");
       break;
     case 25:
@@ -3460,7 +3480,7 @@ static void drawExtendedLayoutValues() {
       break;
     case 24: // Matter status
       drawValueBox(30,59,68,16,HUB_BG,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"READY":"OFFLINE");
-      drawValueBox(10,94,106,16,HUB_PANEL2,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"FABRIC COMMISSIONED":"WAITING TO PAIR");
+      drawValueBox(10,94,106,16,HUB_PANEL2,matterIsCommissioned()?HUB_GREEN:HUB_ORANGE,1,matterIsCommissioned()?"FABRIC COMMISSIONED":"WAITING TO PAIR");
       drawValueBox(10,127,106,14,HUB_BG,climateEndpointReady?HUB_CYAN:HUB_MUTED,1,climateEndpointReady?"CLIMATE ENDPOINT READY":"CLIMATE ENDPOINT --");
       break;
     case 25: // MQTT status
@@ -3529,7 +3549,7 @@ static void drawExtendedLayoutValues() {
       break;
     case 38: // Matter + MQTT info
       drawValueBox(10,54,106,18,HUB_PANEL,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER ONLINE":"MATTER OFFLINE");
-      drawValueBox(10,88,106,18,HUB_PANEL2,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"FABRIC PAIRED":"NOT PAIRED");
+      drawValueBox(10,88,106,18,HUB_PANEL2,matterIsCommissioned()?HUB_GREEN:HUB_ORANGE,1,matterIsCommissioned()?"FABRIC PAIRED":"NOT PAIRED");
       drawValueBox(10,122,106,18,HUB_BG,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"MQTT CONNECTED":"MQTT OFFLINE");
       break;
     case 39: { // Weather diagnostics
@@ -5229,7 +5249,7 @@ void updateSmartHub() {
   // Extended status pages also follow Matter commissioning and MQTT link state.
   static bool lastUiMatter = false, lastUiFabric = false, lastUiMqtt = false;
   const bool uiMatter = matterStarted;
-  const bool uiFabric = Matter.isDeviceCommissioned();
+  const bool uiFabric = matterIsCommissioned();
   const bool uiMqtt = mqttConnectedSnapshot;
   if (uiMatter != lastUiMatter || uiFabric != lastUiFabric || uiMqtt != lastUiMqtt) {
     lastUiMatter = uiMatter; lastUiFabric = uiFabric; lastUiMqtt = uiMqtt;
@@ -6012,7 +6032,7 @@ void handleHubData() {
 void setup() {
   Serial.begin(115200);
   Serial.println();
-  Serial.println("[BOOT] GoodWin Smart Hub v3.11.3-dev - Serial console ready @115200");
+  Serial.println("[BOOT] GoodWin Smart Hub v3.11.4-dev - Serial console ready @115200");
   Serial.flush();
   previousEspLogVprintf = esp_log_set_vprintf(webEspLogVprintf);
   LOG_B("GoodWin Smart Hub booting");
@@ -6114,7 +6134,7 @@ void loop() {
     LOG_S("Heartbeat WiFi=%s RSSI=%d IP=%s GW=%s mode=%u HTTP=80 Matter=%s Fabric=%s heap=%u weather=%s/%s testFPS=%u",
       WiFi.status()==WL_CONNECTED?"Y":"N", WiFi.status()==WL_CONNECTED?WiFi.RSSI():0,
       WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(), (unsigned)WiFi.getMode(),
-      Matter.isDeviceConnected()?"Y":"N",Matter.isDeviceCommissioned()?"Y":"N",ESP.getFreeHeap(),
+      (matterStarted && Matter.isDeviceConnected())?"Y":"N",matterIsCommissioned()?"Y":"N",ESP.getFreeHeap(),
       weatherStatusCopy,weatherProviderCopy,hubTestMeasuredFps);
   }
 
@@ -6169,7 +6189,7 @@ void loop() {
   static uint8_t prevBrightness = 255, prevEffect = 255;
   const bool statusWifi = WiFi.status() == WL_CONNECTED;
   const bool statusMatter = Matter.isDeviceConnected();
-  const bool statusFabric = Matter.isDeviceCommissioned();
+  const bool statusFabric = matterIsCommissioned();
   const bool statusLed = lightOn;
   const uint8_t statusBrightness = brightnessPercent;
   const uint8_t statusEffect = currentEffect;
@@ -6190,11 +6210,8 @@ void loop() {
       effects[statusEffect].name);
   }
 
-  // The Matter helper must not run before Matter.begin(). During asynchronous
-  // Wi-Fi startup the main loop is already active while the Matter stack is not.
-  if (matterStarted) {
-    stageStartedUs = micros();
-    matterRestartIfNoFabric();
-    hubMeasureLoopStage("matter-recovery", stageStartedUs);
-  }
+  // Intentionally do not use the stock Matter fabric-recovery helper: it reboots
+  // the entire ESP32 when the last fabric is removed. Arduino Matter already
+  // opens a commissioning window on kFabricRemoved; the Hub, Wi-Fi, HTTP, MQTT
+  // and local automation must remain running so the device can be paired again.
 }
