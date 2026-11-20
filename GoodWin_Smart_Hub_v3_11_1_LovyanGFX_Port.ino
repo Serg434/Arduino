@@ -636,6 +636,7 @@ void handleLogsStart();
 void handleLogsStop();
 void setupWebServer();
 void startMatter();
+static void enableMatterIPv6();
 void updateEffects();
 void setEffect(uint8_t effect);
 void setPower(bool state);
@@ -2173,7 +2174,7 @@ void handleApi() {
   json += "\"rssi\":"; json += String(WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127); json += ",";
   json += "\"matter\":\""; json += (matterStarted ? "RUNNING" : "NOT STARTED"); json += "\",";
   json += "\"commissioned\":";
-  json += (matterStarted && matterIsCommissioned() ? "true" : "false");
+  json += (matterIsCommissioned() ? "true" : "false");
   json += ",\"code\":\""; json += pairingCode; json += "\",";
   json += "\"qr\":\""; json += pairingQR; json += "\",";
   json += "\"mqttEnabled\":" + String(mqttEnabled ? "true" : "false") + ",";
@@ -6188,7 +6189,7 @@ void loop() {
   static bool prevWifi = false, prevMatter = false, prevFabric = false, prevLed = false;
   static uint8_t prevBrightness = 255, prevEffect = 255;
   const bool statusWifi = WiFi.status() == WL_CONNECTED;
-  const bool statusMatter = Matter.isDeviceConnected();
+  const bool statusMatter = matterStarted && Matter.isDeviceConnected();
   const bool statusFabric = matterIsCommissioned();
   const bool statusLed = lightOn;
   const uint8_t statusBrightness = brightnessPercent;
