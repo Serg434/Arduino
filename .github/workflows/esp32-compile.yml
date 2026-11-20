@@ -1,0 +1,45 @@
+name: ESP32 firmware compile
+
+on:
+  push:
+    branches:
+      - feature/async-core-3-12
+  pull_request:
+    branches:
+      - dev/lovyangfx-tft-port
+      - feature/async-core-3-12
+  workflow_dispatch:
+
+jobs:
+  compile:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+
+      - name: Configure ESP32 core
+        run: |
+          arduino-cli config init
+          arduino-cli core update-index
+          arduino-cli core install esp32:esp32@3.3.12
+
+      - name: Install libraries
+        run: |
+          arduino-cli lib update-index
+          arduino-cli lib install "LovyanGFX"
+          arduino-cli lib install "PubSubClient"
+          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "DHT sensor library"
+          arduino-cli lib install "Adafruit Unified Sensor"
+
+      - name: Prepare Arduino sketch directory
+        run: |
+          mkdir -p /tmp/GoodWinSmartHub
+          cp GoodWin_Smart_Hub_v3_11_1_LovyanGFX_Port.ino /tmp/GoodWinSmartHub/GoodWinSmartHub.ino
+
+      - name: Compile for ESP32 Dev Module
+        run: |
+          arduino-cli compile --fqbn esp32:esp32:esp32 --warnings all /tmp/GoodWinSmartHub
