@@ -1985,21 +1985,21 @@ void mqttWorkerTask(void *parameter) {
       loadMqttConfig();
       if (mqttConfigured()) { mqttClient.setServer(mqttHost.c_str(), mqttPort); setMqttStatus("Настройки обновлены · подключение…"); }
       else setMqttStatus(mqttEnabled ? "Укажи адрес брокера" : "MQTT выключен");
-      mqttClient.connected() = false; forceAttempt = true;
+      mqttConnectedSnapshot = false; forceAttempt = true;
     }
     if (mqttTestRequested) { mqttTestRequested = false; forceAttempt = true; }
     if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) {
-      mqttClient.connected() = false; vTaskDelay(pdMS_TO_TICKS(100)); continue;
+      mqttConnectedSnapshot = false; vTaskDelay(pdMS_TO_TICKS(100)); continue;
     }
     if (!mqttClient.connected() && (forceAttempt || (uint32_t)(millis()-lastAttempt)>=30000UL)) {
       forceAttempt = false; lastAttempt = millis(); mqttConnectNow();
     }
     if (mqttClient.connected()) {
-      mqttClient.connected() = true;
+      mqttConnectedSnapshot = true;
       mqttClient.loop();
       if (mqttStateDirty) publishMqttStateNow();
       if ((uint32_t)(millis()-lastTelemetryAt)>=30000UL) { lastTelemetryAt=millis(); publishMqttTelemetry(); }
-    } else mqttClient.connected() = false;
+    } else mqttConnectedSnapshot = false;
     mqttWorkerLastLoopMs = millis()-startedAt;
     vTaskDelay(pdMS_TO_TICKS(10));
   }
