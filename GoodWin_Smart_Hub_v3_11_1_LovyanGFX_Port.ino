@@ -5952,10 +5952,13 @@ void setup() {
     return;
   }
 
-  startMatter();
-  hubLogResourceSnapshot("matter-started");
+  // Start HTTP as soon as Wi-Fi is ready. The web UI must not wait for
+  // Matter commissioning/session startup before becoming reachable.
   setupWebServer();
   hubLogResourceSnapshot("http-started");
+
+  startMatter();
+  hubLogResourceSnapshot("matter-started");
   setupMqtt();
   hubLogResourceSnapshot("mqtt-started");
   startWeatherTask();
