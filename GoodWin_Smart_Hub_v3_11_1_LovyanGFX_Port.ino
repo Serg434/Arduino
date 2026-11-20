@@ -468,6 +468,16 @@ static constexpr uint8_t PWM_RESOLUTION = 12;
 static constexpr uint32_t PWM_FREQUENCY = 5000;
 static constexpr uint16_t PWM_MAX = (1U << PWM_RESOLUTION) - 1;
 static volatile bool mqttStateDirty = true;
+static volatile bool mqttConnectedSnapshot = false, mqttTestRequested = false, mqttReconfigureRequested = false;
+static volatile uint32_t mqttCommandDrops = 0, mqttWorkerLastLoopMs = 0;
+static QueueHandle_t mqttCommandQueue = nullptr;
+static TaskHandle_t mqttWorkerTaskHandle = nullptr;
+static SemaphoreHandle_t mqttStatusMutex = nullptr;
+struct MqttQueuedCommand { char topic[96]; char payload[256]; };
+static void mqttWorkerTask(void *parameter);
+static void processMqttCommands();
+static void setMqttStatus(const String &status);
+static String getMqttStatus();
 bool resetting = false;
 static bool restartPending = false;
 static bool pendingFactoryReset = false;
@@ -1554,6 +1564,18 @@ String jsonEscape(const String &value) {
 }
 
 
+void setMqttStatus(const String &status) {
+  if (mqttStatusMutex) xSemaphoreTake(mqttStatusMutex, portMAX_DELAY);
+  mqttLastError = status;
+  if (mqttStatusMutex) xSemaphoreGive(mqttStatusMutex);
+}
+String getMqttStatus() {
+  if (mqttStatusMutex) xSemaphoreTake(mqttStatusMutex, portMAX_DELAY);
+  String copy = mqttLastError;
+  if (mqttStatusMutex) xSemaphoreGive(mqttStatusMutex);
+  return copy;
+}
+
 // ============================================================
 // MQTT + Home Assistant MQTT Discovery
 // ============================================================
@@ -1811,12 +1833,24 @@ void applyMqttDisplayOrientation(const String &value) {
 }
 
 void mqttCallback(char *topic, uint8_t *payload, unsigned int length) {
-  String body;
-  body.reserve(length + 1);
-  for (unsigned int i = 0; i < length; ++i) body += (char)payload[i];
-  body.trim();
-  const String topicName(topic);
-
+  if (!mqttCommandQueue || !topic || length >= sizeof(MqttQueuedCommand::payload)) { ++mqttCommandDrops; return; }
+  MqttQueuedCommand command = {};
+  strlcpy(command.topic, topic, sizeof(command.topic));
+  memcpy(command.payload, payload, length);
+  command.payload[length] = 0;
+  if (xQueueSend(mqttCommandQueue, &command, 0) != pdTRUE) ++mqttCommandDrops;
+}
+void processMqttCommands() {
+  if (!mqttCommandQueue) return;
+  MqttQueuedCommand command;
+  uint8_t processed = 0;
+  while (processed < 3 && xQueueReceive(mqttCommandQueue, &command, 0) == pdTRUE) {
+    String body(command.payload); body.trim();
+    applyMqttCommand(String(command.topic), body);
+    ++processed;
+  }
+}
+void applyMqttCommand(const String &topicName, const String &body) {
   if (topicName == mqttTopic("light/set")) {
     const String state = mqttJsonString(body, "state");
     if (state == "OFF") setPower(false);
@@ -1889,33 +1923,29 @@ bool mqttConfigured() {
 
 void setupMqtt() {
   loadMqttConfig();
-  mqttClient.setCallback(mqttCallback);
-  // 3 KB is sufficient for the current MQTT discovery payloads and saves
-  // 1 KB of scarce internal heap versus the previous 4 KB allocation.
-  // Keep headroom for HA effect/layout/saver option lists.
-  if (!mqttClient.setBufferSize(3072)) {
-    LOG_ERR("MQTT packet buffer allocation failed (3072 bytes)");
-  } else {
-    LOG_M("MQTT packet buffer READY: 3072 bytes (1 KB heap saved)");
+  mqttStatusMutex = xSemaphoreCreateMutex();
+  mqttCommandQueue = xQueueCreate(8, sizeof(MqttQueuedCommand));
+  if (!mqttStatusMutex || !mqttCommandQueue) {
+    LOG_ERR("MQTT worker resources allocation failed");
+    setMqttStatus("Недостаточно памяти для MQTT worker");
+    return;
   }
+  mqttClient.setCallback(mqttCallback);
+  if (!mqttClient.setBufferSize(3072)) LOG_ERR("MQTT packet buffer allocation failed (3072 bytes)");
+  else LOG_M("MQTT packet buffer READY: 3072 bytes");
   mqttClient.setKeepAlive(30);
-  // PubSubClient is synchronous: bound socket waits so a missing broker cannot
-  // freeze the main UI loop for the library's long default timeout.
   mqttNetwork.setTimeout(1000);
   mqttClient.setSocketTimeout(1);
-  if (mqttConfigured()) {
-    mqttClient.setServer(mqttHost.c_str(), mqttPort);
-    mqttLastError = "Ожидание подключения";
-    LOG_M("MQTT configured from saved settings: %s:%u", mqttHost.c_str(), mqttPort);
-  } else {
-    mqttLastError = mqttEnabled ? "Укажи адрес брокера" : "MQTT выключен";
-    LOG_M("MQTT disabled or not configured; configure it in the web panel");
-  }
+  setMqttStatus(mqttConfigured() ? "Ожидание подключения" : (mqttEnabled ? "Укажи адрес брокера" : "MQTT выключен"));
+  if (mqttConfigured()) mqttClient.setServer(mqttHost.c_str(), mqttPort);
+  const BaseType_t created = xTaskCreatePinnedToCore(mqttWorkerTask, "mqttWorker", 8192, nullptr, 1, &mqttWorkerTaskHandle, 0);
+  if (created != pdPASS) { mqttWorkerTaskHandle = nullptr; LOG_ERR("MQTT worker task creation failed"); setMqttStatus("Не удалось запустить MQTT worker"); return; }
+  LOG_M("MQTT worker started on core 0; main loop has no MQTT network I/O");
 }
 
 bool mqttConnectNow() {
-  if (WiFi.status() != WL_CONNECTED) { mqttLastError = "Нет подключения к Wi-Fi"; return false; }
-  if (!mqttConfigured()) { mqttLastError = mqttEnabled ? "Не указан адрес брокера" : "MQTT выключен"; return false; }
+  if (WiFi.status() != WL_CONNECTED) { setMqttStatus("Нет подключения к Wi-Fi"); return false; }
+  if (!mqttConfigured()) { setMqttStatus(mqttEnabled ? "Не указан адрес брокера" : "MQTT выключен"); return false; }
   if (mqttClient.connected()) return true;
   mqttClient.setServer(mqttHost.c_str(), mqttPort);
   String clientId = "GoodWin-" + String((uint32_t)ESP.getEfuseMac(), HEX);
@@ -1923,7 +1953,7 @@ bool mqttConnectNow() {
   const bool ok = mqttClient.connect(clientId.c_str(), auth ? mqttUser.c_str() : nullptr,
     auth ? mqttPassword.c_str() : nullptr, mqttTopic("availability").c_str(), 0, true, "offline");
   if (ok) {
-    mqttLastError = "Подключено";
+    setMqttStatus("Подключено");
     LOG_M("MQTT connected to %s:%u", mqttHost.c_str(), mqttPort);
     mqttClient.publish(mqttTopic("availability").c_str(), "online", true);
     mqttClient.subscribe(mqttTopic("light/set").c_str());
@@ -1937,32 +1967,44 @@ bool mqttConnectNow() {
     publishMqttDiscovery();
     publishMqttStateNow();
   } else {
-    mqttLastError = "Ошибка MQTT: " + String(mqttClient.state());
+    setMqttStatus("Ошибка MQTT: " + String(mqttClient.state()));
     LOG_W("MQTT connect failed, state=%d", mqttClient.state());
   }
   return ok;
 }
 
-void mqttLoop() {
-  if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) return;
-  static uint32_t lastAttempt = 0;
-  if (!mqttClient.connected()) {
-    // TCP connect is synchronous on this core. Defer retries during animations.
-    if (hubSaverActive) return;
-    if (millis() - lastAttempt < 30000) return;
-    lastAttempt = millis();
-    mqttConnectNow();
-  }
-  if (mqttClient.connected()) {
-    mqttClient.loop();
-    if (mqttStateDirty) publishMqttStateNow();
-    static uint32_t lastTelemetryAt = 0;
-    if ((uint32_t)(millis() - lastTelemetryAt) >= 30000UL) {
-      lastTelemetryAt = millis();
-      publishMqttTelemetry();
+void mqttWorkerTask(void *parameter) {
+  (void)parameter;
+  uint32_t lastAttempt = 0, lastTelemetryAt = 0;
+  bool forceAttempt = true;
+  for (;;) {
+    const uint32_t startedAt = millis();
+    if (mqttReconfigureRequested) {
+      mqttReconfigureRequested = false;
+      if (mqttClient.connected()) { mqttClient.publish(mqttTopic("availability").c_str(), "offline", true); mqttClient.disconnect(); }
+      loadMqttConfig();
+      if (mqttConfigured()) { mqttClient.setServer(mqttHost.c_str(), mqttPort); setMqttStatus("Настройки обновлены · подключение…"); }
+      else setMqttStatus(mqttEnabled ? "Укажи адрес брокера" : "MQTT выключен");
+      mqttClient.connected() = false; forceAttempt = true;
     }
+    if (mqttTestRequested) { mqttTestRequested = false; forceAttempt = true; }
+    if (!mqttConfigured() || WiFi.status() != WL_CONNECTED) {
+      mqttClient.connected() = false; vTaskDelay(pdMS_TO_TICKS(100)); continue;
+    }
+    if (!mqttClient.connected() && (forceAttempt || (uint32_t)(millis()-lastAttempt)>=30000UL)) {
+      forceAttempt = false; lastAttempt = millis(); mqttConnectNow();
+    }
+    if (mqttClient.connected()) {
+      mqttClient.connected() = true;
+      mqttClient.loop();
+      if (mqttStateDirty) publishMqttStateNow();
+      if ((uint32_t)(millis()-lastTelemetryAt)>=30000UL) { lastTelemetryAt=millis(); publishMqttTelemetry(); }
+    } else mqttClient.connected() = false;
+    mqttWorkerLastLoopMs = millis()-startedAt;
+    vTaskDelay(pdMS_TO_TICKS(10));
   }
 }
+void mqttLoop() { /* MQTT I/O is owned by mqttWorkerTask. */ }
 
 void handleMqttConfigGet() {
   String json = "{\"enabled\":" + String(mqttEnabled ? "true" : "false");
@@ -1994,17 +2036,16 @@ void handleMqttSave() {
   prefs.putBool("enabled", enabled); prefs.putString("host", host); prefs.putUShort("port", (uint16_t)port);
   prefs.putString("user", user); prefs.putString("pass", password); prefs.putString("root", root);
   prefs.end();
-  if (mqttClient.connected()) { mqttClient.publish(mqttTopic("availability").c_str(), "offline", true); mqttClient.disconnect(); }
-  loadMqttConfig();
-  mqttLastError = mqttEnabled ? "Настройки сохранены · подключение…" : "MQTT выключен";
+  mqttReconfigureRequested = true;
+  setMqttStatus(mqttEnabled ? "Настройки сохранены · подключение…" : "MQTT выключен");
   server.send(200, "application/json", "{\"ok\":true}");
   LOG_M("MQTT settings saved; enabled=%s host=%s port=%u", mqttEnabled ? "yes" : "no", mqttHost.c_str(), mqttPort);
 }
 
 void handleMqttTest() {
-  const bool ok = mqttConnectNow();
-  String json = "{\"ok\":" + String(ok ? "true" : "false") + ",\"message\":\"" + jsonEscape(mqttLastError) + "\"}";
-  server.send(ok ? 200 : 503, "application/json; charset=utf-8", json);
+  mqttTestRequested = true;
+  server.send(202, "application/json; charset=utf-8",
+    "{\"ok\":true,\"queued\":true,\"message\":\"Проверка подключения поставлена в очередь\"}");
 }
 
 void handleScanStart() {
@@ -2072,8 +2113,8 @@ void handleApi() {
   json += ",\"code\":\""; json += pairingCode; json += "\",";
   json += "\"qr\":\""; json += pairingQR; json += "\",";
   json += "\"mqttEnabled\":" + String(mqttEnabled ? "true" : "false") + ",";
-  json += "\"mqttConnected\":" + String(mqttClient.connected() ? "true" : "false") + ",";
-  json += "\"mqttStatus\":\"" + jsonEscape(mqttLastError) + "\",\"hubLayout\":" + String(hubLayoutId) + ",\"weatherValid\":" + String(weatherValid ? "true" : "false") + "}";
+  json += "\"mqttConnected\":" + String(mqttConnectedSnapshot ? "true" : "false") + ",";
+  json += "\"mqttStatus\":\"" + jsonEscape(getMqttStatus()) + "\",\"hubLayout\":" + String(hubLayoutId) + ",\"weatherValid\":" + String(weatherValid ? "true" : "false") + "}";
   server.send(200, "application/json; charset=utf-8", json);
 }
 
@@ -5910,7 +5951,7 @@ void loop() {
   hubMeasureLoopStage("wifi-recovery", stageStartedUs);
 
   stageStartedUs = micros();
-  mqttLoop();
+  processMqttCommands();
   hubMeasureLoopStage("mqtt", stageStartedUs);
 
   stageStartedUs = micros();
