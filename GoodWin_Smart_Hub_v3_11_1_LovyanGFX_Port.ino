@@ -248,8 +248,8 @@ static lgfx::LGFXBase *hubRenderTarget = &hubDisplay;
 static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
 static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
 static lgfx::LGFX_Sprite hubValueCanvas(&hubDisplay);
-// Shared native LovyanGFX sprite: each saver is composed as a complete RGB565
-// scene (RGB332) and transferred with pushSprite/DMA to eliminate clear-then-redraw flicker.
+// Shared native LovyanGFX sprite: each scene is composed in RGB332
+// and transferred with pushSprite/DMA to eliminate clear-then-redraw flicker.
 static lgfx::LGFX_Sprite *hubSaverCanvas = nullptr;
 static int16_t hubSaverCanvasW = 0;
 static int16_t hubSaverCanvasH = 0;
@@ -4005,8 +4005,8 @@ static void initHubScreenSaver() {
       if (hubSaverCanvas) {
         hubSaverCanvas->setColorDepth(8); // RGB332
         void *spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
-        // A full-screen 40 KB scene is preferred. If the heap is fragmented,
-        // gracefully fall back to the proven compact 117 px saver band.
+        // A full-screen 20 KB RGB332 scene is preferred. If the heap is fragmented,
+        // gracefully fall back to the compact 117 px saver band.
         if (!spriteBuffer && hubSaverCanvasFullScreen && h > 43) {
           delete hubSaverCanvas;
           hubSaverCanvas = new lgfx::LGFX_Sprite(&hubDisplay);
@@ -4871,8 +4871,8 @@ static void drawHubScreenSaverFrame() {
   }
 
   if (presentFrame) {
-    // pushSprite submits the native RGB565 diagnostic sprite to the display. Keep its buffer
-    // buffer unchanged until the destination DMA engine has finished reading it.
+    // pushSprite submits the native diagnostic sprite to the display. Keep its buffer
+    // unchanged until the destination DMA engine has finished reading it.
     // LGFX_Sprite::pushSprite owns the destination write transaction.
     // Avoid nesting it inside a manual startWrite()/endWrite() pair.
     cv.pushSprite(0, hubSaverCanvasFullScreen ? 0 : 25);
