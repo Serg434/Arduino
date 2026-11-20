@@ -392,6 +392,7 @@ String timeText = "--:--";
 String dateText = "--.--.----";
 portMUX_TYPE hubDataMux = portMUX_INITIALIZER_UNLOCKED;
 TaskHandle_t weatherTaskHandle = nullptr;
+static uint32_t weatherTaskNotBeforeAt = 0;
 static const char *HUB_LAYOUT_NAMES[] = {
   "Dashboard", "Часы крупно", "Погода крупно", "Домашний климат", "Дом + улица", "Состояние света",
   "Aurora — погода PRO", "Тест TFT · FPS", "Orbit — neon telemetry", "Terminal — monochrome", "Dark Tech", "Amber", "Glass UI", "Cyber",
@@ -668,6 +669,7 @@ static void hubInvalidateValueCache();
 void pushChangedTftFrame();
 void updateHubClock();
 void startWeatherTask();
+static void serviceWeatherTaskStartup();
 void weatherTask(void *parameter);
 void handleHubConfig();
 void handleHubSaverStart();
@@ -5667,12 +5669,7 @@ static constexpr uint32_t WEATHER_MIN_LARGEST_BLOCK = 30000UL;
 
 void weatherTask(void *parameter){
   (void)parameter;
-  const uint32_t firstAttemptAt = millis() + WEATHER_BOOT_GRACE_MS;
-  while ((int32_t)(millis() - firstAttemptAt) < 0) {
-    const uint32_t remaining = firstAttemptAt - millis();
-    vTaskDelay(pdMS_TO_TICKS(remaining));
-  }
-  LOG_B("Weather worker startup grace elapsed");
+  LOG_B("Weather worker started after startup grace");
   for(;;){
     uint32_t nextDelay=WEATHER_INTERVAL_MS;
     if(WiFi.status()!=WL_CONNECTED){setWeatherText("Нет Wi-Fi", "—");nextDelay=60000UL;}
@@ -5720,9 +5717,45 @@ void weatherTask(void *parameter){
 }
 
 void startWeatherTask() {
-  if (weatherTaskHandle) return;
-  BaseType_t created = xTaskCreatePinnedToCore(weatherTask, "hubWeather", 8192, nullptr, 1, &weatherTaskHandle, 0);
-  if (created != pdPASS) { weatherTaskHandle = nullptr; setWeatherText("Ошибка задачи погоды"); LOG_ERR("Cannot create weather task"); }
+  if (weatherTaskHandle || weatherTaskNotBeforeAt) return;
+  // Do not reserve an 8 KB task stack while Matter is establishing sessions.
+  weatherTaskNotBeforeAt = millis() + WEATHER_BOOT_GRACE_MS;
+  LOG_B("Weather worker scheduled in %lu ms; task stack allocation deferred",
+        (unsigned long)WEATHER_BOOT_GRACE_MS);
+}
+
+static void serviceWeatherTaskStartup() {
+  if (weatherTaskHandle || !weatherTaskNotBeforeAt) return;
+  if ((int32_t)(millis() - weatherTaskNotBeforeAt) < 0) return;
+
+  const uint32_t freeHeap = ESP.getFreeHeap();
+  const uint32_t largestBlock = ESP.getMaxAllocHeap();
+  if (WiFi.status() != WL_CONNECTED ||
+      freeHeap < WEATHER_MIN_FREE_HEAP ||
+      largestBlock < WEATHER_MIN_LARGEST_BLOCK) {
+    static uint32_t lastDeferredLogAt = 0;
+    if (!lastDeferredLogAt || (uint32_t)(millis() - lastDeferredLogAt) >= 30000UL) {
+      lastDeferredLogAt = millis();
+      LOG_W("Weather task creation deferred: WiFi=%u free=%lu largest=%lu required=%lu/%lu",
+            WiFi.status() == WL_CONNECTED ? 1U : 0U,
+            (unsigned long)freeHeap, (unsigned long)largestBlock,
+            (unsigned long)WEATHER_MIN_FREE_HEAP, (unsigned long)WEATHER_MIN_LARGEST_BLOCK);
+    }
+    weatherTaskNotBeforeAt = millis() + 30000UL;
+    return;
+  }
+
+  const BaseType_t created = xTaskCreatePinnedToCore(weatherTask, "hubWeather", 8192, nullptr, 1, &weatherTaskHandle, 0);
+  if (created != pdPASS) {
+    weatherTaskHandle = nullptr;
+    weatherTaskNotBeforeAt = millis() + 30000UL;
+    setWeatherText("Ошибка задачи погоды");
+    LOG_ERR("Cannot create weather task; retry in 30 seconds");
+    return;
+  }
+  weatherTaskNotBeforeAt = 0;
+  LOG_B("Weather task created after memory check: free=%lu largest=%lu",
+        (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
 }
 
 void handleHubSaverStart() {
@@ -5924,7 +5957,7 @@ void setup() {
   setupMqtt();
   hubLogResourceSnapshot("mqtt-started");
   startWeatherTask();
-  hubLogResourceSnapshot("weather-task-created");
+  hubLogResourceSnapshot("weather-task-scheduled");
 
   if (MDNS.begin(MDNS_HOSTNAME)) {
     MDNS.addService("http", "tcp", 80);
@@ -5976,6 +6009,7 @@ void loop() {
   stageStartedUs = micros();
   server.handleClient();
   hubMeasureLoopStage("http-post", stageStartedUs);
+  serviceWeatherTaskStartup();
   static uint32_t lastSerialHeartbeatAt=0;
   if((uint32_t)(millis()-lastSerialHeartbeatAt)>=30000UL){
     lastSerialHeartbeatAt=millis();
