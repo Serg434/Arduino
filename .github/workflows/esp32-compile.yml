@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - feature/async-core-3-12
+      - feature/async-mqtt-dashboard-452448b
   pull_request:
     branches:
       - dev/lovyangfx-tft-port
