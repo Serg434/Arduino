@@ -4174,6 +4174,8 @@ static void drawHubScreenSaverFrame() {
   const float phase = now * 0.0011f;
   bool presentFrame = true;
 
+  // Reset any clip left by the previous saver/frame before clearing the backdrop.
+  cv.clearClipRect();
   drawSaverCanvasBackdrop(cv, w, h);
 
   // Branded savers reserve fixed top/bottom chrome bands. Clip every animated
