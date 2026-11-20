@@ -473,6 +473,7 @@ static volatile uint32_t mqttCommandDrops = 0, mqttWorkerLastLoopMs = 0;
 static QueueHandle_t mqttCommandQueue = nullptr;
 static TaskHandle_t mqttWorkerTaskHandle = nullptr;
 static SemaphoreHandle_t mqttStatusMutex = nullptr;
+static SemaphoreHandle_t mqttConfigMutex = nullptr;
 struct MqttQueuedCommand { char topic[96]; char payload[256]; };
 static void mqttWorkerTask(void *parameter);
 static void processMqttCommands();
@@ -1579,7 +1580,18 @@ String getMqttStatus() {
 // ============================================================
 // MQTT + Home Assistant MQTT Discovery
 // ============================================================
-String mqttTopic(const char *suffix) { return mqttRoot + "/" + suffix; }
+String mqttTopic(const char *suffix) {
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  String root = mqttRoot;
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  return root + "/" + suffix;
+}
+String mqttHostForUi() {
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  String host = mqttHost;
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  return host;
+}
 
 String mqttJsonString(const String &payload, const char *key) {
   String needle = String("\"") + key + "\"";
@@ -1901,6 +1913,7 @@ void applyMqttCommand(const String &topicName, const String &body) {
 }
 
 void loadMqttConfig() {
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
   Preferences prefs;
   prefs.begin("mqttcfg", true);
   mqttEnabled = prefs.getBool("enabled", false);
@@ -1915,15 +1928,20 @@ void loadMqttConfig() {
   while (mqttRoot.startsWith("/")) mqttRoot.remove(0, 1);
   while (mqttRoot.endsWith("/")) mqttRoot.remove(mqttRoot.length() - 1);
   if (mqttRoot.isEmpty()) mqttRoot = MQTT_DEFAULT_ROOT;
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
 }
 
 bool mqttConfigured() {
-  return mqttEnabled && !mqttHost.isEmpty() && mqttPort > 0 && !mqttRoot.isEmpty();
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  const bool configured = mqttEnabled && !mqttHost.isEmpty() && mqttPort > 0 && !mqttRoot.isEmpty();
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  return configured;
 }
 
 void setupMqtt() {
-  loadMqttConfig();
+  mqttConfigMutex = xSemaphoreCreateMutex();
   mqttStatusMutex = xSemaphoreCreateMutex();
+  loadMqttConfig();
   mqttCommandQueue = xQueueCreate(8, sizeof(MqttQueuedCommand));
   if (!mqttStatusMutex || !mqttCommandQueue) {
     LOG_ERR("MQTT worker resources allocation failed");
@@ -1945,16 +1963,22 @@ void setupMqtt() {
 
 bool mqttConnectNow() {
   if (WiFi.status() != WL_CONNECTED) { setMqttStatus("Нет подключения к Wi-Fi"); return false; }
-  if (!mqttConfigured()) { setMqttStatus(mqttEnabled ? "Не указан адрес брокера" : "MQTT выключен"); return false; }
+  String host, user, password;
+  uint16_t port = MQTT_DEFAULT_PORT;
+  bool enabled = false;
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  host = mqttHost; user = mqttUser; password = mqttPassword; port = mqttPort; enabled = mqttEnabled;
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  if (!enabled || host.isEmpty() || port == 0) { setMqttStatus(enabled ? "Не указан адрес брокера" : "MQTT выключен"); return false; }
   if (mqttClient.connected()) return true;
-  mqttClient.setServer(mqttHost.c_str(), mqttPort);
+  mqttClient.setServer(host.c_str(), port);
   String clientId = "GoodWin-" + String((uint32_t)ESP.getEfuseMac(), HEX);
-  const bool auth = !mqttUser.isEmpty();
-  const bool ok = mqttClient.connect(clientId.c_str(), auth ? mqttUser.c_str() : nullptr,
-    auth ? mqttPassword.c_str() : nullptr, mqttTopic("availability").c_str(), 0, true, "offline");
+  const bool auth = !user.isEmpty();
+  const bool ok = mqttClient.connect(clientId.c_str(), auth ? user.c_str() : nullptr,
+    auth ? password.c_str() : nullptr, mqttTopic("availability").c_str(), 0, true, "offline");
   if (ok) {
     setMqttStatus("Подключено");
-    LOG_M("MQTT connected to %s:%u", mqttHost.c_str(), mqttPort);
+    LOG_M("MQTT connected to %s:%u", host.c_str(), port);
     mqttClient.publish(mqttTopic("availability").c_str(), "online", true);
     mqttClient.subscribe(mqttTopic("light/set").c_str());
     mqttClient.subscribe(mqttTopic("speed/set").c_str());
@@ -2007,10 +2031,16 @@ void mqttWorkerTask(void *parameter) {
 void mqttLoop() { /* MQTT I/O is owned by mqttWorkerTask. */ }
 
 void handleMqttConfigGet() {
-  String json = "{\"enabled\":" + String(mqttEnabled ? "true" : "false");
-  json += ",\"host\":\"" + jsonEscape(mqttHost) + "\",\"port\":" + String(mqttPort);
-  json += ",\"user\":\"" + jsonEscape(mqttUser) + "\",\"root\":\"" + jsonEscape(mqttRoot);
-  json += "\",\"passwordSet\":" + String(mqttPassword.isEmpty() ? "false" : "true") + "}";
+  bool enabled, passwordSet;
+  uint16_t port;
+  String host, user, root;
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  enabled = mqttEnabled; port = mqttPort; host = mqttHost; user = mqttUser; root = mqttRoot; passwordSet = !mqttPassword.isEmpty();
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  String json = "{\"enabled\":" + String(enabled ? "true" : "false");
+  json += ",\"host\":\"" + jsonEscape(host) + "\",\"port\":" + String(port);
+  json += ",\"user\":\"" + jsonEscape(user) + "\",\"root\":\"" + jsonEscape(root);
+  json += "\",\"passwordSet\":" + String(passwordSet ? "true" : "false") + "}";
   server.send(200, "application/json; charset=utf-8", json);
 }
 
@@ -2037,9 +2067,9 @@ void handleMqttSave() {
   prefs.putString("user", user); prefs.putString("pass", password); prefs.putString("root", root);
   prefs.end();
   mqttReconfigureRequested = true;
-  setMqttStatus(mqttEnabled ? "Настройки сохранены · подключение…" : "MQTT выключен");
+  setMqttStatus(enabled ? "Настройки сохранены · подключение…" : "MQTT выключен");
   server.send(200, "application/json", "{\"ok\":true}");
-  LOG_M("MQTT settings saved; enabled=%s host=%s port=%u", mqttEnabled ? "yes" : "no", mqttHost.c_str(), mqttPort);
+  LOG_M("MQTT settings saved; enabled=%s host=%s port=%d", enabled ? "yes" : "no", host.c_str(), port);
 }
 
 void handleMqttTest() {
@@ -3155,7 +3185,7 @@ static void drawExtendedLandscapeValues() {
     case 25:
       drawValueBox(10,52,62,22,black,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"ONLINE":"OFFLINE");
       drawValueBox(87,52,62,22,black,HUB_CYAN,1,mqttEnabled?"ENABLED":"DISABLED");
-      drawValueBox(10,101,140,14,black,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
+      drawValueBox(10,101,140,14,black,HUB_MUTED,1,mqttHostForUi().c_str());
       break;
     case 30:
       drawValueBox(10,52,62,22,black,0xFFFF,2,timeText.c_str());
@@ -3304,7 +3334,7 @@ static void drawExtendedLayoutValues() {
     case 25: // MQTT status
       drawValueBox(10,56,90,22,HUB_PANEL,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"CONNECTED":"DISCONNECTED");
       drawValueBox(10,94,106,14,HUB_PANEL2,HUB_WHITE,1,mqttEnabled?"MQTT ENABLED":"MQTT DISABLED");
-      drawValueBox(10,126,106,16,HUB_BG,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
+      drawValueBox(10,126,106,16,HUB_BG,HUB_MUTED,1,mqttHostForUi().c_str());
       break;
     case 26: // Vertical clean
       drawValueBox(10,36,106,25,HUB_BG,HUB_WHITE,2,timeText.c_str());
@@ -5952,7 +5982,7 @@ void loop() {
 
   stageStartedUs = micros();
   processMqttCommands();
-  hubMeasureLoopStage("mqtt", stageStartedUs);
+  hubMeasureLoopStage("mqtt-command-queue", stageStartedUs);
 
   stageStartedUs = micros();
   updateEffects();
