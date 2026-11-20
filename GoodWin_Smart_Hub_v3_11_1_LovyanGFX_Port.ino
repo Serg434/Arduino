@@ -473,6 +473,8 @@ static constexpr uint8_t PWM_RESOLUTION = 12;
 static constexpr uint32_t PWM_FREQUENCY = 5000;
 static constexpr uint16_t PWM_MAX = (1U << PWM_RESOLUTION) - 1;
 static volatile bool mqttStateDirty = true;
+static volatile bool mqttDiscoveryPending = false;
+static uint32_t mqttDiscoveryRetryAt = 0;
 static volatile bool mqttConnectedSnapshot = false, mqttTestRequested = false, mqttReconfigureRequested = false;
 static volatile uint32_t mqttCommandDrops = 0, mqttWorkerLastLoopMs = 0;
 static QueueHandle_t mqttCommandQueue = nullptr;
@@ -673,7 +675,7 @@ void handleMqttConfigGet();
 void handleMqttSave();
 void handleMqttTest();
 void publishMqttState();
-void publishMqttDiscovery();
+bool publishMqttDiscovery();
 void publishMqttTelemetry();
 void setEffectSpeed(uint16_t value);
 void handleSpeed();
@@ -1682,98 +1684,603 @@ void publishMqttStateNow() {
   mqttStateDirty = false;
 }
 
-void publishMqttSensorDiscovery(const char *objectId, const char *name, const char *unit,
-                                const char *deviceClass, const char *icon) {
-  String config = "{\"name\":\"" + String(name) + "\",\"unique_id\":\"gw_esp_001_" + String(objectId) +
-    "\",\"state_topic\":\"" + mqttTopic((String(objectId) + "/state").c_str()) +
-    "\",\"availability_topic\":\"" + mqttTopic("availability") +
-    "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"";
-  if (unit && unit[0]) config += ",\"unit_of_measurement\":\"" + String(unit) + "\"";
-  if (deviceClass && deviceClass[0]) config += ",\"device_class\":\"" + String(deviceClass) + "\"";
-  if (icon && icon[0]) config += ",\"icon\":\"" + String(icon) + "\"";
-  config += ",\"state_class\":\"measurement\",\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.11.0\"}}";
-  const String topic = "homeassistant/sensor/goodwin_" + String(objectId) + "/config";
-  mqttClient.publish(topic.c_str(), config.c_str(), true);
+// MQTT Discovery JSON is built in fixed buffers. This deliberately avoids
+// heap-allocating Arduino String concatenation in the reconnect/discovery path.
+// A failed append invalidates the whole document; a partial document is never sent.
+static constexpr size_t MQTT_DISCOVERY_PAYLOAD_CAPACITY = 2048;
+static constexpr size_t MQTT_DISCOVERY_TOPIC_CAPACITY = 192;
+static char mqttDiscoveryPayload[MQTT_DISCOVERY_PAYLOAD_CAPACITY];
+static char mqttDiscoveryValidationBuffer[MQTT_DISCOVERY_PAYLOAD_CAPACITY];
+static StaticJsonDocument<2048> mqttDiscoveryValidationDoc;
+
+class MqttJsonWriter {
+public:
+  MqttJsonWriter(char *buffer, size_t capacity) : buffer_(buffer), capacity_(capacity) {
+    reset();
+  }
+
+  void reset() {
+    length_ = 0;
+    error_ = nullptr;
+    if (buffer_ && capacity_) buffer_[0] = '\0';
+    else error_ = "INVALID_OUTPUT_BUFFER";
+  }
+
+  bool good() const { return error_ == nullptr; }
+  const char *error() const { return error_ ? error_ : "NONE"; }
+  const char *data() const { return buffer_; }
+  size_t length() const { return length_; }
+
+  bool raw(const char *text) {
+    if (!text) return fail("NULL_RAW_TEXT");
+    return bytes(text, strlen(text));
+  }
+
+  bool character(char value) {
+    return bytes(&value, 1);
+  }
+
+  bool quoted(const char *value) {
+    if (!value) return fail("NULL_JSON_STRING");
+    if (!character('"')) return false;
+    static const char hex[] = "0123456789ABCDEF";
+    for (const unsigned char *p = reinterpret_cast<const unsigned char *>(value); *p; ++p) {
+      const unsigned char c = *p;
+      if (c == '"' || c == '\\') {
+        if (!character('\\') || !character((char)c)) return false;
+      } else if (c == '\b') {
+        if (!raw("\\b")) return false;
+      } else if (c == '\f') {
+        if (!raw("\\f")) return false;
+      } else if (c == '\n') {
+        if (!raw("\\n")) return false;
+      } else if (c == '\r') {
+        if (!raw("\\r")) return false;
+      } else if (c == '\t') {
+        if (!raw("\\t")) return false;
+      } else if (c < 0x20) {
+        char escaped[6] = {'\\', 'u', '0', '0', hex[c >> 4], hex[c & 0x0F]};
+        if (!bytes(escaped, sizeof(escaped))) return false;
+      } else {
+        if (!character((char)c)) return false;
+      }
+    }
+    return character('"');
+  }
+
+  bool beginField(bool &first, const char *key) {
+    if (!first && !character(',')) return false;
+    first = false;
+    return quoted(key) && character(':');
+  }
+
+  bool stringField(bool &first, const char *key, const char *value) {
+    return beginField(first, key) && quoted(value);
+  }
+
+  bool rawField(bool &first, const char *key, const char *value) {
+    return beginField(first, key) && raw(value);
+  }
+
+private:
+  char *buffer_;
+  size_t capacity_;
+  size_t length_ = 0;
+  const char *error_ = nullptr;
+
+  bool fail(const char *reason) {
+    if (!error_) error_ = reason;
+    return false;
+  }
+
+  bool bytes(const char *data, size_t count) {
+    if (!good()) return false;
+    if (!buffer_ || !capacity_ || (!data && count)) return fail("INVALID_BUFFER_OR_SOURCE");
+    if (length_ >= capacity_ || count > capacity_ - 1 - length_) return fail("PAYLOAD_BUFFER_OVERFLOW");
+    if (count) memcpy(buffer_ + length_, data, count);
+    length_ += count;
+    buffer_[length_] = '\0';
+    return true;
+  }
+};
+
+static bool mqttBuildTopicFixed(char *out, size_t outSize, const char *suffix) {
+  if (!out || outSize == 0 || !suffix || !suffix[0]) return false;
+  char root[128] = {0};
+  bool rootValid = false;
+  if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
+  const char *rootValue = mqttRoot.c_str();
+  if (rootValue && rootValue[0]) {
+    const size_t rootLength = strnlen(rootValue, sizeof(root));
+    if (rootLength > 0 && rootLength < sizeof(root)) {
+      memcpy(root, rootValue, rootLength + 1);
+      rootValid = true;
+    }
+  }
+  if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
+  if (!rootValid) return false;
+  const int written = snprintf(out, outSize, "%s/%s", root, suffix);
+  return written > 0 && (size_t)written < outSize;
 }
 
-void publishMqttDiscovery() {
-  const String device = "\"device\":{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\",\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.11.0\"}";
-  String light = "{\"name\":\"GoodWin Smart Light\",\"default_entity_id\":\"light.goodwin_smart_light\",\"unique_id\":\"gw_esp_001_mqtt_light\",\"schema\":\"json\",\"state_topic\":\"";
-  light += mqttTopic("light/state") + "\",\"command_topic\":\"" + mqttTopic("light/set");
-  light += "\",\"availability_topic\":\"" + mqttTopic("availability");
-  light += "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\",\"brightness\":true,\"brightness_scale\":255,\"effect\":true,\"effect_list\":[";
-  for (uint8_t i = 0; i < FX_COUNT; ++i) { if (i) light += ','; light += "\"" + jsonEscape(effects[i].name) + "\""; }
-  light += "],\"supported_color_modes\":[\"brightness\"]," + device + "}";
-  mqttClient.publish("homeassistant/light/goodwin_smart_light/config", light.c_str(), true);
+static bool mqttJsonAppendDevice(MqttJsonWriter &json, bool &first) {
+  return json.beginField(first, "device") &&
+    json.raw("{\"identifiers\":[\"GW-ESP32-001\"],\"name\":\"GoodWin Smart Hub\","
+             "\"manufacturer\":\"GoodWin\",\"model\":\"ESP32 Smart Hub\",\"sw_version\":\"3.11.0\"}");
+}
 
-  // Dedicated effect selector: available in HA even when the light card hides
-  // the MQTT light effect dropdown in its current frontend presentation.
-  String effectSelect = "{\"name\":\"GoodWin Light Effect\",\"unique_id\":\"gw_esp_001_light_effect\",\"state_topic\":\"" +
-    mqttTopic("effect/state") + "\",\"command_topic\":\"" + mqttTopic("effect/set") + "\",\"options\":[";
-  for (uint8_t i = 0; i < FX_COUNT; ++i) {
-    if (i) effectSelect += ',';
-    effectSelect += "\"" + jsonEscape(effects[i].name) + "\"";
+static void mqttDiscoveryReportFailure(const char *entity, const char *stage, const char *reason,
+                                       const char *topic, const char *payload, size_t payloadLength,
+                                       int itemIndex = -1) {
+  Serial.printf("[MQTT][DISCOVERY][ERROR] entity=%s stage=%s reason=%s item=%d topic=%s payload=%u "
+                "mqttBuffer=%u heap=%u largest=%u minHeap=%u\n",
+                entity ? entity : "<null>", stage ? stage : "<null>",
+                reason ? reason : "<null>", itemIndex, topic ? topic : "<null>",
+                (unsigned)payloadLength, (unsigned)mqttClient.getBufferSize(),
+                (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
+                (unsigned)ESP.getMinFreeHeap());
+  if (payload && payloadLength) {
+    Serial.println("[MQTT][DISCOVERY] rejected payload BEGIN");
+    Serial.write(reinterpret_cast<const uint8_t *>(payload), payloadLength);
+    Serial.println();
+    Serial.println("[MQTT][DISCOVERY] rejected payload END");
   }
-  effectSelect += "],\"availability_topic\":\"" + mqttTopic("availability") +
-    "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/select/goodwin_light_effect/config", effectSelect.c_str(), true);
+}
 
-  String speed = "{\"name\":\"GoodWin Effect Speed\",\"unique_id\":\"gw_esp_001_effect_speed\",\"state_topic\":\"" +
-    mqttTopic("speed/state") + "\",\"command_topic\":\"" + mqttTopic("speed/set");
-  speed += "\",\"min\":25,\"max\":300,\"step\":5,\"mode\":\"slider\",\"unit_of_measurement\":\"%\",\"icon\":\"mdi:speedometer\"," + device + "}";
-  mqttClient.publish("homeassistant/number/goodwin_effect_speed/config", speed.c_str(), true);
+static bool mqttValidateDiscoveryJson(const char *entity, const char *topic,
+                                      const char *payload, size_t payloadLength) {
+  if (!payload || payloadLength == 0 || payloadLength >= sizeof(mqttDiscoveryValidationBuffer)) {
+    mqttDiscoveryReportFailure(entity, "JSON_INPUT", "EMPTY_OR_OVERSIZED_PAYLOAD",
+                               topic, payload, payloadLength);
+    return false;
+  }
+  memcpy(mqttDiscoveryValidationBuffer, payload, payloadLength);
+  mqttDiscoveryValidationBuffer[payloadLength] = '\0';
+  mqttDiscoveryValidationDoc.clear();
+  DeserializationError parseError =
+    deserializeJson(mqttDiscoveryValidationDoc, mqttDiscoveryValidationBuffer, payloadLength);
+  if (parseError) {
+    mqttDiscoveryReportFailure(entity, "JSON_PARSE", parseError.c_str(),
+                               topic, payload, payloadLength);
+    return false;
+  }
+  if (!mqttDiscoveryValidationDoc.is<JsonObject>()) {
+    mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "ROOT_IS_NOT_OBJECT",
+                               topic, payload, payloadLength);
+    return false;
+  }
 
-  String display = "{\"name\":\"GoodWin Display\",\"unique_id\":\"gw_esp_001_display\",\"state_topic\":\"" + mqttTopic("display/state") +
-    "\",\"command_topic\":\"" + mqttTopic("display/set") + "\",\"payload_on\":\"ON\",\"payload_off\":\"OFF\",\"availability_topic\":\"" +
-    mqttTopic("availability") + "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/switch/goodwin_display/config", display.c_str(), true);
-  String displayBrightness = "{\"name\":\"GoodWin Display Brightness\",\"unique_id\":\"gw_esp_001_display_brightness\",\"state_topic\":\"" +
-    mqttTopic("display_brightness/state") + "\",\"command_topic\":\"" + mqttTopic("display_brightness/set") +
-    "\",\"min\":1,\"max\":100,\"step\":1,\"mode\":\"slider\",\"unit_of_measurement\":\"%\",\"availability_topic\":\"" +
-    mqttTopic("availability") + "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/number/goodwin_display_brightness/config", displayBrightness.c_str(), true);
+  JsonObject root = mqttDiscoveryValidationDoc.as<JsonObject>();
+  const char *name = root["name"];
+  const char *uniqueId = root["unique_id"];
+  const char *stateTopic = root["state_topic"];
+  if (!name || !name[0] || !uniqueId || !uniqueId[0] || !stateTopic || !stateTopic[0]) {
+    mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "MISSING_REQUIRED_NAME_UNIQUE_ID_OR_STATE_TOPIC",
+                               topic, payload, payloadLength);
+    return false;
+  }
 
-  String layout = "{\"name\":\"GoodWin Screen Layout\",\"unique_id\":\"gw_esp_001_screen_layout\",\"state_topic\":\"" +
-    mqttTopic("screen_layout/state") + "\",\"command_topic\":\"" + mqttTopic("screen_layout/set") + "\",\"options\":[";
-  for (uint8_t i=0;i<HUB_LAYOUT_COUNT;++i) { if(i) layout+=','; layout += "\"" + jsonEscape(HUB_LAYOUT_NAMES[i]) + "\""; }
-  layout += "],\"availability_topic\":\"" + mqttTopic("availability") + "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/select/goodwin_screen_layout/config", layout.c_str(), true);
+  const char *arrayFields[] = {"effect_list", "options"};
+  for (uint8_t field = 0; field < 2; ++field) {
+    JsonVariant value = root[arrayFields[field]];
+    if (value.isNull()) continue;
+    if (!value.is<JsonArray>()) {
+      mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "OPTIONS_FIELD_IS_NOT_ARRAY",
+                                 topic, payload, payloadLength);
+      return false;
+    }
+    JsonArray values = value.as<JsonArray>();
+    uint16_t index = 0;
+    for (JsonVariant item : values) {
+      const char *option = item.as<const char *>();
+      if (!option || !option[0]) {
+        mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "EMPTY_OR_NON_STRING_ARRAY_ITEM",
+                                   topic, payload, payloadLength, (int)index);
+        return false;
+      }
+      ++index;
+    }
+    if (index == 0) {
+      mqttDiscoveryReportFailure(entity, "JSON_SCHEMA", "EMPTY_OPTIONS_ARRAY",
+                                 topic, payload, payloadLength);
+      return false;
+    }
+  }
+  return true;
+}
 
-  String saver = "{\"name\":\"GoodWin Screensaver\",\"unique_id\":\"gw_esp_001_screensaver\",\"state_topic\":\"" +
-    mqttTopic("screensaver/state") + "\",\"command_topic\":\"" + mqttTopic("screensaver/set") + "\",\"options\":[";
-  for (uint8_t i=0;i<HUB_SAVER_COUNT;++i) { if(i) saver+=','; saver += "\"" + jsonEscape(HUB_SAVER_NAMES[i]) + "\""; }
-  saver += "],\"availability_topic\":\"" + mqttTopic("availability") + "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/select/goodwin_screensaver/config", saver.c_str(), true);
+static bool mqttPublishDiscoveryJson(const char *entity, const char *topic,
+                                     MqttJsonWriter &json) {
+  if (!json.good()) {
+    mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                               json.data(), json.length());
+    return false;
+  }
+  const size_t payloadLength = json.length();
+  if (!topic || !topic[0]) {
+    mqttDiscoveryReportFailure(entity, "TOPIC_BUILD", "NULL_OR_EMPTY_TOPIC",
+                               topic, json.data(), payloadLength);
+    return false;
+  }
+  const size_t topicLength = strnlen(topic, MQTT_DISCOVERY_TOPIC_CAPACITY);
+  if (topicLength == 0 || topicLength >= MQTT_DISCOVERY_TOPIC_CAPACITY) {
+    mqttDiscoveryReportFailure(entity, "TOPIC_BUILD", "TOPIC_TOO_LONG_OR_UNTERMINATED",
+                               topic, json.data(), payloadLength);
+    return false;
+  }
 
-  static const char *orientationNames[] = {"Портрет", "Альбомная", "Портрет 180°", "Альбомная 180°"};
-  String orientation = "{\"name\":\"GoodWin Display Orientation\",\"unique_id\":\"gw_esp_001_display_orientation\",\"state_topic\":\"" +
-    mqttTopic("display_orientation/state") + "\",\"command_topic\":\"" + mqttTopic("display_orientation/set") + "\",\"options\":[";
-  for (uint8_t i=0;i<4;++i) { if(i) orientation+=','; orientation += "\"" + String(orientationNames[i]) + "\""; }
-  orientation += "],\"availability_topic\":\"" + mqttTopic("availability") + "\",\"payload_available\":\"online\",\"payload_not_available\":\"offline\"," + device + "}";
-  mqttClient.publish("homeassistant/select/goodwin_display_orientation/config", orientation.c_str(), true);
+  // PubSubClient reserves up to MQTT_MAX_HEADER_SIZE (5) bytes plus the
+  // two-byte topic length before the topic and payload.
+  const size_t requiredPacketBytes = 5U + 2U + topicLength + payloadLength;
+  const size_t mqttBufferSize = mqttClient.getBufferSize();
+  if (requiredPacketBytes > mqttBufferSize) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PACKET_SIZE", "PACKET_EXCEEDS_PUBSUBCLIENT_BUFFER",
+                               topic, json.data(), payloadLength);
+    return false;
+  }
+  if (!mqttValidateDiscoveryJson(entity, topic, json.data(), payloadLength)) return false;
+  if (!mqttClient.connected()) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PUBLISH", "CLIENT_NOT_CONNECTED",
+                               topic, json.data(), payloadLength);
+    return false;
+  }
 
-  publishMqttSensorDiscovery("indoor_temperature","GoodWin Indoor Temperature","°C","temperature","mdi:thermometer");
-  publishMqttSensorDiscovery("indoor_humidity","GoodWin Indoor Humidity","%","humidity","mdi:water-percent");
-  publishMqttSensorDiscovery("outdoor_temperature","GoodWin Outdoor Temperature","°C","temperature","mdi:thermometer");
-  publishMqttSensorDiscovery("outdoor_humidity","GoodWin Outdoor Humidity","%","humidity","mdi:water-percent");
-  publishMqttSensorDiscovery("feels_like_temperature","GoodWin Feels Like Temperature","°C","temperature","mdi:thermometer-lines");
-  publishMqttSensorDiscovery("outdoor_pressure","GoodWin Outdoor Pressure","hPa","pressure","mdi:gauge");
-  publishMqttSensorDiscovery("wind_speed","GoodWin Wind Speed","km/h","wind_speed","mdi:weather-windy");
-  publishMqttSensorDiscovery("wind_direction","GoodWin Wind Direction","°","","mdi:compass");
-  publishMqttSensorDiscovery("cloud_cover","GoodWin Cloud Cover","%","","mdi:weather-cloudy");
-  publishMqttSensorDiscovery("uv_index","GoodWin UV Index","","","mdi:sunglasses");
-  publishMqttSensorDiscovery("precipitation_probability","GoodWin Precipitation Probability","%","","mdi:weather-rainy");
-  publishMqttSensorDiscovery("precipitation_mm","GoodWin Precipitation","mm","precipitation","mdi:weather-pouring");
-  publishMqttSensorDiscovery("wifi_rssi","GoodWin WiFi Signal","dBm","signal_strength","mdi:wifi");
-  publishMqttSensorDiscovery("uptime","GoodWin Uptime","s","duration","mdi:timer-outline");
-  publishMqttSensorDiscovery("free_heap","GoodWin Free Heap","B","","mdi:memory");
-  publishMqttSensorDiscovery("min_free_heap","GoodWin Minimum Free Heap","B","","mdi:memory");
-  publishMqttSensorDiscovery("largest_heap_block","GoodWin Largest Heap Block","B","","mdi:memory");
-  publishMqttSensorDiscovery("cpu_freq_mhz","GoodWin CPU Frequency","MHz","","mdi:chip");
-  publishMqttSensorDiscovery("chip_temp_c","GoodWin Chip Temperature","°C","temperature","mdi:thermometer");
-  publishMqttSensorDiscovery("psram_free","GoodWin Free PSRAM","B","","mdi:memory");
-  publishMqttSensorDiscovery("tft_fps","GoodWin TFT FPS","fps","","mdi:monitor");
-  publishMqttSensorDiscovery("tft_draw_us","GoodWin TFT Draw Time","µs","","mdi:timer-outline");
+  // Both pointers are now known non-null, bounded, and NUL-terminated.
+  if (!mqttClient.publish(topic, json.data(), true)) {
+    mqttDiscoveryReportFailure(entity, "MQTT_PUBLISH", "PUBSUBCLIENT_RETURNED_FALSE",
+                               topic, json.data(), payloadLength);
+    return false;
+  }
+  LOG_M("[MQTT][DISCOVERY][OK] entity=%s payload=%u packet=%u/%u",
+        entity, (unsigned)payloadLength, (unsigned)requiredPacketBytes,
+        (unsigned)mqttBufferSize);
+  return true;
+}
+
+static bool mqttAppendStringArray(MqttJsonWriter &json, const char *entity,
+                                  const char *topic, bool &firstField,
+                                  const char *fieldName, const char *const *values, size_t count) {
+  if (!json.beginField(firstField, fieldName) || !json.character('[')) {
+    mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                               json.data(), json.length());
+    return false;
+  }
+  for (size_t i = 0; i < count; ++i) {
+    if (!values || !values[i] || !values[i][0]) {
+      mqttDiscoveryReportFailure(entity, "JSON_BUILD", "NULL_OR_EMPTY_ARRAY_VALUE",
+                                 topic, json.data(), json.length(), (int)i);
+      return false;
+    }
+    if ((i && !json.character(',')) || !json.quoted(values[i])) {
+      mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                                 json.data(), json.length(), (int)i);
+      return false;
+    }
+  }
+  if (!json.character(']')) {
+    mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                               json.data(), json.length());
+    return false;
+  }
+  return true;
+}
+
+static bool mqttAppendEffectArray(MqttJsonWriter &json, const char *entity,
+                                  const char *topic, bool &firstField, const char *fieldName) {
+  if (!json.beginField(firstField, fieldName) || !json.character('[')) {
+    mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                               json.data(), json.length());
+    return false;
+  }
+  for (uint8_t i = 0; i < FX_COUNT; ++i) {
+    if (!effects[i].name || !effects[i].name[0]) {
+      mqttDiscoveryReportFailure(entity, "EFFECT_LIST", "NULL_OR_EMPTY_EFFECT_NAME",
+                                 topic, json.data(), json.length(), (int)i);
+      return false;
+    }
+    if ((i && !json.character(',')) || !json.quoted(effects[i].name)) {
+      mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                                 json.data(), json.length(), (int)i);
+      return false;
+    }
+  }
+  if (!json.character(']')) {
+    mqttDiscoveryReportFailure(entity, "JSON_BUILD", json.error(), topic,
+                               json.data(), json.length());
+    return false;
+  }
+  return true;
+}
+
+static bool publishMqttSensorDiscovery(const char *objectId, const char *name, const char *unit,
+                                       const char *deviceClass, const char *icon) {
+  if (!objectId || !objectId[0] || !name || !name[0]) {
+    mqttDiscoveryReportFailure("sensor", "INPUT", "NULL_OR_EMPTY_OBJECT_ID_OR_NAME",
+                               nullptr, nullptr, 0);
+    return false;
+  }
+  char topic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  char stateTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  char availabilityTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  char stateSuffix[96];
+  const int suffixLength = snprintf(stateSuffix, sizeof(stateSuffix), "%s/state", objectId);
+  const int discoveryLength = snprintf(topic, sizeof(topic),
+                                       "homeassistant/sensor/goodwin_%s/config", objectId);
+  if (suffixLength <= 0 || (size_t)suffixLength >= sizeof(stateSuffix) ||
+      discoveryLength <= 0 || (size_t)discoveryLength >= sizeof(topic) ||
+      !mqttBuildTopicFixed(stateTopic, sizeof(stateTopic), stateSuffix) ||
+      !mqttBuildTopicFixed(availabilityTopic, sizeof(availabilityTopic), "availability")) {
+    mqttDiscoveryReportFailure(name, "TOPIC_BUILD", "SENSOR_TOPIC_BUILD_FAILED",
+                               topic, nullptr, 0);
+    return false;
+  }
+
+  MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+  json.character('{');
+  bool first = true;
+  json.stringField(first, "name", name);
+  char uniqueId[96];
+  const int uniqueLength = snprintf(uniqueId, sizeof(uniqueId), "gw_esp_001_%s", objectId);
+  if (uniqueLength <= 0 || (size_t)uniqueLength >= sizeof(uniqueId)) {
+    mqttDiscoveryReportFailure(name, "JSON_BUILD", "UNIQUE_ID_TOO_LONG",
+                               topic, json.data(), json.length());
+    return false;
+  }
+  json.stringField(first, "unique_id", uniqueId);
+  json.stringField(first, "state_topic", stateTopic);
+  json.stringField(first, "availability_topic", availabilityTopic);
+  json.stringField(first, "payload_available", "online");
+  json.stringField(first, "payload_not_available", "offline");
+  if (unit && unit[0]) json.stringField(first, "unit_of_measurement", unit);
+  if (deviceClass && deviceClass[0]) json.stringField(first, "device_class", deviceClass);
+  if (icon && icon[0]) json.stringField(first, "icon", icon);
+  json.stringField(first, "state_class", "measurement");
+  mqttJsonAppendDevice(json, first);
+  json.character('}');
+  return mqttPublishDiscoveryJson(name, topic, json);
+}
+
+bool publishMqttDiscovery() {
+  if (!mqttClient.connected()) return false;
+
+  char stateTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  char commandTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  char availabilityTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+  if (!mqttBuildTopicFixed(stateTopic, sizeof(stateTopic), "light/state") ||
+      !mqttBuildTopicFixed(commandTopic, sizeof(commandTopic), "light/set") ||
+      !mqttBuildTopicFixed(availabilityTopic, sizeof(availabilityTopic), "availability")) {
+    mqttDiscoveryReportFailure("light.goodwin_smart_light", "TOPIC_BUILD",
+                               "LIGHT_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+    return false;
+  }
+
+  // 1) MQTT light with the complete, checked effect list.
+  {
+    const char *topic = "homeassistant/light/goodwin_smart_light/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Smart Light");
+    json.stringField(first, "default_entity_id", "light.goodwin_smart_light");
+    json.stringField(first, "unique_id", "gw_esp_001_mqtt_light");
+    json.stringField(first, "schema", "json");
+    json.stringField(first, "state_topic", stateTopic);
+    json.stringField(first, "command_topic", commandTopic);
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    json.rawField(first, "brightness", "true");
+    json.rawField(first, "brightness_scale", "255");
+    json.rawField(first, "effect", "true");
+    if (!mqttAppendEffectArray(json, "light.goodwin_smart_light", topic, first, "effect_list")) return false;
+    json.rawField(first, "supported_color_modes", "[\"brightness\"]");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("light.goodwin_smart_light", topic, json)) return false;
+  }
+
+  // 2) Dedicated effect selector, using the exact same validated effect table.
+  {
+    char effectState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char effectCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(effectState, sizeof(effectState), "effect/state") ||
+        !mqttBuildTopicFixed(effectCommand, sizeof(effectCommand), "effect/set")) {
+      mqttDiscoveryReportFailure("select.goodwin_light_effect", "TOPIC_BUILD",
+                                 "EFFECT_SELECT_TOPIC_BUILD_FAILED", nullptr, nullptr, 0);
+      return false;
+    }
+    const char *topic = "homeassistant/select/goodwin_light_effect/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Light Effect");
+    json.stringField(first, "unique_id", "gw_esp_001_light_effect");
+    json.stringField(first, "state_topic", effectState);
+    json.stringField(first, "command_topic", effectCommand);
+    if (!mqttAppendEffectArray(json, "select.goodwin_light_effect", topic, first, "options")) return false;
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("select.goodwin_light_effect", topic, json)) return false;
+  }
+
+  // 3) Effect speed number.
+  {
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "speed/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "speed/set")) return false;
+    const char *topic = "homeassistant/number/goodwin_effect_speed/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Effect Speed");
+    json.stringField(first, "unique_id", "gw_esp_001_effect_speed");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    json.rawField(first, "min", "25");
+    json.rawField(first, "max", "300");
+    json.rawField(first, "step", "5");
+    json.stringField(first, "mode", "slider");
+    json.stringField(first, "unit_of_measurement", "%");
+    json.stringField(first, "icon", "mdi:speedometer");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("number.goodwin_effect_speed", topic, json)) return false;
+  }
+
+  // 4) Display switch.
+  {
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display/set")) return false;
+    const char *topic = "homeassistant/switch/goodwin_display/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Display");
+    json.stringField(first, "unique_id", "gw_esp_001_display");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    json.stringField(first, "payload_on", "ON");
+    json.stringField(first, "payload_off", "OFF");
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("switch.goodwin_display", topic, json)) return false;
+  }
+
+  // 5) Display brightness number.
+  {
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display_brightness/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_brightness/set")) return false;
+    const char *topic = "homeassistant/number/goodwin_display_brightness/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Display Brightness");
+    json.stringField(first, "unique_id", "gw_esp_001_display_brightness");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    json.rawField(first, "min", "1");
+    json.rawField(first, "max", "100");
+    json.rawField(first, "step", "1");
+    json.stringField(first, "mode", "slider");
+    json.stringField(first, "unit_of_measurement", "%");
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("number.goodwin_display_brightness", topic, json)) return false;
+  }
+
+  // 6) Screen layout selector.
+  {
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "screen_layout/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screen_layout/set")) return false;
+    const char *topic = "homeassistant/select/goodwin_screen_layout/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Screen Layout");
+    json.stringField(first, "unique_id", "gw_esp_001_screen_layout");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    if (!mqttAppendStringArray(json, "select.goodwin_screen_layout", topic, first,
+                               "options", HUB_LAYOUT_NAMES, HUB_LAYOUT_COUNT)) return false;
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("select.goodwin_screen_layout", topic, json)) return false;
+  }
+
+  // 7) Screensaver selector.
+  {
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "screensaver/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "screensaver/set")) return false;
+    const char *topic = "homeassistant/select/goodwin_screensaver/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Screensaver");
+    json.stringField(first, "unique_id", "gw_esp_001_screensaver");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    if (!mqttAppendStringArray(json, "select.goodwin_screensaver", topic, first,
+                               "options", HUB_SAVER_NAMES, HUB_SAVER_COUNT)) return false;
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("select.goodwin_screensaver", topic, json)) return false;
+  }
+
+  // 8) Display orientation selector.
+  {
+    static const char *orientationNames[] = {"Портрет", "Альбомная", "Портрет 180°", "Альбомная 180°"};
+    char valueState[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    char valueCommand[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
+    if (!mqttBuildTopicFixed(valueState, sizeof(valueState), "display_orientation/state") ||
+        !mqttBuildTopicFixed(valueCommand, sizeof(valueCommand), "display_orientation/set")) return false;
+    const char *topic = "homeassistant/select/goodwin_display_orientation/config";
+    MqttJsonWriter json(mqttDiscoveryPayload, sizeof(mqttDiscoveryPayload));
+    json.character('{');
+    bool first = true;
+    json.stringField(first, "name", "GoodWin Display Orientation");
+    json.stringField(first, "unique_id", "gw_esp_001_display_orientation");
+    json.stringField(first, "state_topic", valueState);
+    json.stringField(first, "command_topic", valueCommand);
+    if (!mqttAppendStringArray(json, "select.goodwin_display_orientation", topic, first,
+                               "options", orientationNames, 4)) return false;
+    json.stringField(first, "availability_topic", availabilityTopic);
+    json.stringField(first, "payload_available", "online");
+    json.stringField(first, "payload_not_available", "offline");
+    mqttJsonAppendDevice(json, first);
+    json.character('}');
+    if (!mqttPublishDiscoveryJson("select.goodwin_display_orientation", topic, json)) return false;
+  }
+
+  // Sensor Discovery configs.
+  if (!publishMqttSensorDiscovery("indoor_temperature","GoodWin Indoor Temperature","°C","temperature","mdi:thermometer")) return false;
+  if (!publishMqttSensorDiscovery("indoor_humidity","GoodWin Indoor Humidity","%","humidity","mdi:water-percent")) return false;
+  if (!publishMqttSensorDiscovery("outdoor_temperature","GoodWin Outdoor Temperature","°C","temperature","mdi:thermometer")) return false;
+  if (!publishMqttSensorDiscovery("outdoor_humidity","GoodWin Outdoor Humidity","%","humidity","mdi:water-percent")) return false;
+  if (!publishMqttSensorDiscovery("feels_like_temperature","GoodWin Feels Like Temperature","°C","temperature","mdi:thermometer-lines")) return false;
+  if (!publishMqttSensorDiscovery("outdoor_pressure","GoodWin Outdoor Pressure","hPa","pressure","mdi:gauge")) return false;
+  if (!publishMqttSensorDiscovery("wind_speed","GoodWin Wind Speed","km/h","wind_speed","mdi:weather-windy")) return false;
+  if (!publishMqttSensorDiscovery("wind_direction","GoodWin Wind Direction","°","","mdi:compass")) return false;
+  if (!publishMqttSensorDiscovery("cloud_cover","GoodWin Cloud Cover","%","","mdi:weather-cloudy")) return false;
+  if (!publishMqttSensorDiscovery("uv_index","GoodWin UV Index","","","mdi:sunglasses")) return false;
+  if (!publishMqttSensorDiscovery("precipitation_probability","GoodWin Precipitation Probability","%","","mdi:weather-rainy")) return false;
+  if (!publishMqttSensorDiscovery("precipitation_mm","GoodWin Precipitation","mm","precipitation","mdi:weather-pouring")) return false;
+  if (!publishMqttSensorDiscovery("wifi_rssi","GoodWin WiFi Signal","dBm","signal_strength","mdi:wifi")) return false;
+  if (!publishMqttSensorDiscovery("uptime","GoodWin Uptime","s","duration","mdi:timer-outline")) return false;
+  if (!publishMqttSensorDiscovery("free_heap","GoodWin Free Heap","B","","mdi:memory")) return false;
+  if (!publishMqttSensorDiscovery("min_free_heap","GoodWin Minimum Free Heap","B","","mdi:memory")) return false;
+  if (!publishMqttSensorDiscovery("largest_heap_block","GoodWin Largest Heap Block","B","","mdi:memory")) return false;
+  if (!publishMqttSensorDiscovery("cpu_freq_mhz","GoodWin CPU Frequency","MHz","","mdi:chip")) return false;
+  if (!publishMqttSensorDiscovery("chip_temp_c","GoodWin Chip Temperature","°C","temperature","mdi:thermometer")) return false;
+  if (!publishMqttSensorDiscovery("psram_free","GoodWin Free PSRAM","B","","mdi:memory")) return false;
+  if (!publishMqttSensorDiscovery("tft_fps","GoodWin TFT FPS","fps","","mdi:monitor")) return false;
+  if (!publishMqttSensorDiscovery("tft_draw_us","GoodWin TFT Draw Time","µs","","mdi:timer-outline")) return false;
+
+  LOG_M("[MQTT][DISCOVERY] all 30 entities published and JSON-validated");
+  return true;
 }
 
 void publishMqttTelemetry() {
@@ -2023,7 +2530,9 @@ bool mqttConnectNow() {
     mqttClient.subscribe(mqttTopic("screen_layout/set").c_str());
     mqttClient.subscribe(mqttTopic("screensaver/set").c_str());
     mqttClient.subscribe(mqttTopic("display_orientation/set").c_str());
-    publishMqttDiscovery();
+    mqttDiscoveryPending = !publishMqttDiscovery();
+    mqttDiscoveryRetryAt = millis() + 30000UL;
+    if (mqttDiscoveryPending) LOG_ERR("MQTT Discovery incomplete; retry scheduled in 30 seconds");
     publishMqttStateNow();
   } else {
     setMqttStatus("Ошибка MQTT: " + String(mqttClient.state()));
@@ -2056,6 +2565,11 @@ void mqttWorkerTask(void *parameter) {
     if (mqttClient.connected()) {
       mqttConnectedSnapshot = true;
       mqttClient.loop();
+      if (mqttDiscoveryPending && (int32_t)(millis() - mqttDiscoveryRetryAt) >= 0) {
+        mqttDiscoveryPending = !publishMqttDiscovery();
+        mqttDiscoveryRetryAt = millis() + 30000UL;
+        if (mqttDiscoveryPending) LOG_ERR("MQTT Discovery retry incomplete; next retry in 30 seconds");
+      }
       if (mqttStateDirty) publishMqttStateNow();
       if ((uint32_t)(millis()-lastTelemetryAt)>=30000UL) { lastTelemetryAt=millis(); publishMqttTelemetry(); }
     } else mqttConnectedSnapshot = false;
