@@ -3140,7 +3140,7 @@ static void drawExtendedLandscapeValues() {
     case 22:
       drawValueBox(10,52,62,22,black,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED,1,WiFi.status()==WL_CONNECTED?"WI-FI OK":"WI-FI OFF");
       drawValueBox(87,52,62,22,black,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER OK":"MATTER OFF");
-      snprintf(v,sizeof(v),"MQTT %s  HEAP %uK",mqttClient.connected()?"OK":"OFF",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_CYAN,1,v);
+      snprintf(v,sizeof(v),"MQTT %s  HEAP %uK",mqttConnectedSnapshot?"OK":"OFF",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(10,101,140,14,black,HUB_CYAN,1,v);
       break;
     case 23: case 37:
       snprintf(v,sizeof(v),"%d dBm",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127); drawValueBox(10,52,62,22,black,HUB_CYAN,1,v);
@@ -3150,10 +3150,10 @@ static void drawExtendedLandscapeValues() {
     case 24: case 38:
       drawValueBox(10,52,62,22,black,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER ON":"MATTER OFF");
       drawValueBox(87,52,62,22,black,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"PAIRED":"UNPAIRED");
-      drawValueBox(10,101,140,14,black,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"MQTT CONNECTED":"MQTT DISCONNECTED");
+      drawValueBox(10,101,140,14,black,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"MQTT CONNECTED":"MQTT DISCONNECTED");
       break;
     case 25:
-      drawValueBox(10,52,62,22,black,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"ONLINE":"OFFLINE");
+      drawValueBox(10,52,62,22,black,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"ONLINE":"OFFLINE");
       drawValueBox(87,52,62,22,black,HUB_CYAN,1,mqttEnabled?"ENABLED":"DISABLED");
       drawValueBox(10,101,140,14,black,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
       break;
@@ -3177,7 +3177,7 @@ static void drawExtendedLandscapeValues() {
     case 41:
       snprintf(v,sizeof(v),"UP %lu MIN",(unsigned long)(millis()/60000UL)); drawValueBox(10,52,62,22,black,fg,1,v);
       snprintf(v,sizeof(v),"HEAP %u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(87,52,62,22,black,HUB_CYAN,1,v);
-      snprintf(v,sizeof(v),"RSSI %d dBm  MQTT %s",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127,mqttClient.connected()?"OK":"OFF"); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
+      snprintf(v,sizeof(v),"RSSI %d dBm  MQTT %s",WiFi.status()==WL_CONNECTED?WiFi.RSSI():-127,mqttConnectedSnapshot?"OK":"OFF"); drawValueBox(10,101,140,14,black,HUB_MUTED,1,v);
       snprintf(v,sizeof(v),"AI %lu / ANOM %lu",(unsigned long)hubAIEvents,(unsigned long)hubAIAnomalyCount); drawValueBox(10,126,140,14,black,HUB_CYAN,1,v);
       break;
     default:
@@ -3288,7 +3288,7 @@ static void drawExtendedLayoutValues() {
     case 22: // System status
       drawValueBox(10,56,47,18,HUB_PANEL,WiFi.status()==WL_CONNECTED?HUB_GREEN:HUB_RED,1,WiFi.status()==WL_CONNECTED?"ONLINE":"OFFLINE");
       drawValueBox(69,56,47,18,HUB_PANEL2,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"READY":"STOPPED");
-      drawValueBox(10,111,47,18,HUB_PANEL,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"LINK OK":"NO LINK");
+      drawValueBox(10,111,47,18,HUB_PANEL,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"LINK OK":"NO LINK");
       snprintf(v,sizeof(v),"%u KB",(unsigned)(ESP.getFreeHeap()/1024)); drawValueBox(69,111,47,18,HUB_PANEL2,HUB_CYAN,1,v);
       break;
     case 23: // Wi-Fi status
@@ -3302,7 +3302,7 @@ static void drawExtendedLayoutValues() {
       drawValueBox(10,127,106,14,HUB_BG,climateEndpointReady?HUB_CYAN:HUB_MUTED,1,climateEndpointReady?"CLIMATE ENDPOINT READY":"CLIMATE ENDPOINT --");
       break;
     case 25: // MQTT status
-      drawValueBox(10,56,90,22,HUB_PANEL,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"CONNECTED":"DISCONNECTED");
+      drawValueBox(10,56,90,22,HUB_PANEL,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"CONNECTED":"DISCONNECTED");
       drawValueBox(10,94,106,14,HUB_PANEL2,HUB_WHITE,1,mqttEnabled?"MQTT ENABLED":"MQTT DISABLED");
       drawValueBox(10,126,106,16,HUB_BG,HUB_MUTED,1,mqttHost.length()?mqttHost.c_str():"BROKER NOT SET");
       break;
@@ -3368,7 +3368,7 @@ static void drawExtendedLayoutValues() {
     case 38: // Matter + MQTT info
       drawValueBox(10,54,106,18,HUB_PANEL,matterStarted?HUB_GREEN:HUB_RED,1,matterStarted?"MATTER ONLINE":"MATTER OFFLINE");
       drawValueBox(10,88,106,18,HUB_PANEL2,Matter.isDeviceCommissioned()?HUB_GREEN:HUB_ORANGE,1,Matter.isDeviceCommissioned()?"FABRIC PAIRED":"NOT PAIRED");
-      drawValueBox(10,122,106,18,HUB_BG,mqttClient.connected()?HUB_GREEN:HUB_ORANGE,1,mqttClient.connected()?"MQTT CONNECTED":"MQTT OFFLINE");
+      drawValueBox(10,122,106,18,HUB_BG,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE,1,mqttConnectedSnapshot?"MQTT CONNECTED":"MQTT OFFLINE");
       break;
     case 39: { // Weather diagnostics
       char status[64], provider[24]; copyWeatherText(status,sizeof(status),provider,sizeof(provider));
@@ -3466,7 +3466,7 @@ static void drawExtendedLayout(int16_t w, int16_t h) {
     case 25:
       hubTFT.setTextSize(1);hubTFT.setTextColor(HUB_MUTED);hubTFT.setCursor(10,37);hubTFT.print("BROKER CONNECTION");
       hubTFT.drawRoundRect(8,53,w-16,35,7,HUB_LINE);
-      hubTFT.fillCircle(w-20,70,5,mqttClient.connected()?HUB_GREEN:HUB_ORANGE);
+      hubTFT.fillCircle(w-20,70,5,mqttConnectedSnapshot?HUB_GREEN:HUB_ORANGE);
       hubTFT.setCursor(10,101);hubTFT.print("MQTT TELEMETRY");
       hubTFT.drawFastHLine(10,116,w-20,HUB_LINE);
       break;
@@ -5068,7 +5068,7 @@ void updateSmartHub() {
   static bool lastUiMatter = false, lastUiFabric = false, lastUiMqtt = false;
   const bool uiMatter = matterStarted;
   const bool uiFabric = Matter.isDeviceCommissioned();
-  const bool uiMqtt = mqttClient.connected();
+  const bool uiMqtt = mqttConnectedSnapshot;
   if (uiMatter != lastUiMatter || uiFabric != lastUiFabric || uiMqtt != lastUiMqtt) {
     lastUiMatter = uiMatter; lastUiFabric = uiFabric; lastUiMqtt = uiMqtt;
     if (hubLayoutId >= 14 && hubLayoutId < HUB_LAYOUT_COUNT) hubSensorDirty = true;
@@ -5887,7 +5887,7 @@ static void hubMeasureLoopStage(const char *stage, uint32_t startedUs) {
   LOG_ERR("LOOP BLOCK stage=%s elapsed=%lu ms saver=%u WiFi=%u RSSI=%d MQTT=%u heap=%u largest=%u",
           stage, (unsigned long)(elapsedUs / 1000UL), hubSaverId,
           (unsigned)WiFi.status(), WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : -127,
-          mqttClient.connected() ? 1U : 0U, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+          mqttConnectedSnapshot ? 1U : 0U, ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 }
 
 void loop() {
