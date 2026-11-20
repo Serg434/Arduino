@@ -2591,15 +2591,7 @@ bool connectSavedWiFi() {
   }
 
   LOG_W("Connecting to saved Wi-Fi network; DHCP hostname=%s", WIFI_HOSTNAME);
-// Connect with the Arduino Wi-Fi driver first. Do not call matterConnectWiFi()
-  // here: that starts CHIP network handling even when the saved router is absent,
-  // which leaves Matter repeatedly querying a nonexistent configured network while
-  // the setup AP is running. Matter is started only after STA is actually connected.
-  WiFi.mode(WIFI_STA);
-  WiFi.setHostname(WIFI_HOSTNAME);
-  WiFi.setSleep(false);
-  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
-
+  // Matter is started only after the STA link is confirmed by serviceStartupWiFi().
   WiFi.setAutoReconnect(false);
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(WIFI_HOSTNAME);
