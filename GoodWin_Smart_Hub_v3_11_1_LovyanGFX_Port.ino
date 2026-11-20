@@ -6703,7 +6703,10 @@ void setup() {
     ESP.getFlashChipSpeed() / 1000000UL, ESP.getPsramSize() / 1024UL, ESP.getSdkVersion());
   setupSmartHubDisplay();
   hubLogResourceSnapshot("display-ready");
-  configTzTime("YEKT-5", "pool.ntp.org", "time.google.com", "time.cloudflare.com");
+  // TEMP DIAGNOSTIC: defer SNTP/configTzTime until Wi-Fi initialization is proven.
+  // Arduino-ESP32 configTzTime() calls esp_netif_init() itself; keep it out of
+  // the pre-Wi-Fi startup path while isolating the esp_wifi_init() failure.
+  LOG_W("SNTP initialization deferred during Wi-Fi startup diagnostics");
   statePrefs.begin("hubcfg", true);
   hubLayoutId = statePrefs.getUChar("layout", 0); if (hubLayoutId >= HUB_LAYOUT_COUNT) hubLayoutId = 0;
   hubSaverId = statePrefs.getUChar("saver", 0); if (hubSaverId >= HUB_SAVER_COUNT) hubSaverId = 0;
