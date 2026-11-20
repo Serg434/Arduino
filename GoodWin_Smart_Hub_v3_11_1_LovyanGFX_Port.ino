@@ -1841,7 +1841,14 @@ bool mqttConfigured() {
 void setupMqtt() {
   loadMqttConfig();
   mqttClient.setCallback(mqttCallback);
-  mqttClient.setBufferSize(4096);
+  // 3 KB is sufficient for the current MQTT discovery payloads and saves
+  // 1 KB of scarce internal heap versus the previous 4 KB allocation.
+  // Keep headroom for HA effect/layout/saver option lists.
+  if (!mqttClient.setBufferSize(3072)) {
+    LOG_ERR("MQTT packet buffer allocation failed (3072 bytes)");
+  } else {
+    LOG_M("MQTT packet buffer READY: 3072 bytes (1 KB heap saved)");
+  }
   mqttClient.setKeepAlive(30);
   // PubSubClient is synchronous: bound socket waits so a missing broker cannot
   // freeze the main UI loop for the library's long default timeout.
