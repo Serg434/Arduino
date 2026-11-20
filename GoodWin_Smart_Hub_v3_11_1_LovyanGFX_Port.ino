@@ -2599,8 +2599,8 @@ void startConnectedServices() {
     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
     WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
 // Wi-Fi STA is already connected by serviceStartupWiFi().
-  // Do not reconfigure the STA through Matter before Matter.begin(); this
-  // caused a fabric-removal/restart loop on the affected ESP32 build.
+  // Wi-Fi association belongs to the Hub asynchronous state machine. Matter
+  // starts only after STA is connected; avoid the library's blocking Wi-Fi helper.
   LOG_W("Starting Matter on the established Wi-Fi STA interface");
   startMatter();
   hubLogResourceSnapshot("matter-started");
@@ -3020,6 +3020,9 @@ void startMatter() {
 
   // Matter.begin() starts the protocol stack asynchronously. The stock readiness
   // helper blocks for up to five minutes and reboots an uncommissioned node.
+#if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
+  LOG_M("STA IPv6 link-local: %s", WiFi.linkLocalIPv6().toString().c_str());
+#endif
   Matter.begin();
   pairingCode = Matter.getManualPairingCode();
   pairingQR = matterPayloadFromUrl(Matter.getOnboardingQRCodeUrl());
@@ -3049,6 +3052,7 @@ void startMatter() {
   LOG_M("Started; name=%s", DEVICE_NAME);
   LOG_M("Pairing code: %s", pairingCode.c_str());
   LOG_M("Commissioned: %s", matterIsCommissioned() ? "YES" : "NO");
+  if (!matterIsCommissioned()) LOG_M("No Matter fabric: node remains available for commissioning; Hub continues normally");
 
   effectStartedAt = millis();
   randomTimer = millis();
