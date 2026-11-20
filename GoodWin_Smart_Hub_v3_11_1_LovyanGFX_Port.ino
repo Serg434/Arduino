@@ -520,6 +520,9 @@ static uint32_t portalStaAttemptStartedAt = 0;
 static bool portalStaAttemptInProgress = false;
 static uint32_t portalWifiConnectedSince = 0;
 static bool portalMatterStarted = false;
+static bool startupWifiPending = false;
+static uint32_t startupWifiStartedAt = 0;
+static bool connectedServicesStarted = false;
 
 // ---------- Effects ----------
 enum Effect : uint8_t {
@@ -648,6 +651,8 @@ void handleWiFiReset();
 void processBootButton();
 void processWiFiRecovery();
 bool connectSavedWiFi();
+void serviceStartupWiFi();
+void startConnectedServices();
 void setupMqtt();
 void mqttLoop();
 bool mqttConnectNow();
@@ -2519,6 +2524,61 @@ void updatePortalIndicator() {
   }
 }
 
+
+// Complete network-dependent startup only after the STA link is established.
+// This keeps the main setup path responsive and prevents Matter from starting
+// against a missing router.
+void startConnectedServices() {
+  if (connectedServicesStarted || WiFi.status() != WL_CONNECTED) return;
+  connectedServicesStarted = true;
+  startupWifiPending = false;
+  WiFi.setAutoReconnect(true);
+  LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
+    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
+    WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
+#if !CONFIG_ENABLE_CHIPOBLE
+  LOG_W("Preparing Matter Wi-Fi/IPv6 network interface");
+  matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
+#endif
+  startMatter();
+  hubLogResourceSnapshot("matter-started");
+  setupMqtt();
+  hubLogResourceSnapshot("mqtt-started");
+  startWeatherTask();
+  hubLogResourceSnapshot("weather-task-scheduled");
+  if (MDNS.begin(MDNS_HOSTNAME)) {
+    MDNS.addService("http", "tcp", 80);
+    LOG_W("mDNS: http://%s.local", MDNS_HOSTNAME);
+  } else {
+    LOG_ERR("mDNS startup failed");
+  }
+  if (String(OTA_PASSWORD) != "CHANGE_ME_GW_OTA_2026" && strlen(OTA_PASSWORD) >= 10) {
+    ArduinoOTA.setHostname(MDNS_HOSTNAME);
+    ArduinoOTA.setPassword(OTA_PASSWORD);
+    ArduinoOTA.begin();
+    LOG_W("OTA enabled; hostname=%s", MDNS_HOSTNAME);
+  } else {
+    LOG_W("OTA disabled: set a unique OTA_PASSWORD (10+ chars) in sketch");
+  }
+  LOG_B("Initialization complete");
+}
+
+void serviceStartupWiFi() {
+  if (!startupWifiPending || connectedServicesStarted) return;
+  if (WiFi.status() == WL_CONNECTED) {
+    startConnectedServices();
+    return;
+  }
+  if ((uint32_t)(millis() - startupWifiStartedAt) < 20000UL) return;
+
+  startupWifiPending = false;
+  LOG_ERR("Wi-Fi connection timed out after 20000 ms; retaining credentials and entering setup portal");
+  WiFi.setAutoReconnect(false);
+  WiFi.disconnect(false, false);
+  startPortal();
+  startWeatherTask();
+}
+
 bool connectSavedWiFi() {
   netPrefs.begin("netcfg", true);
   wifiSSID = netPrefs.getString("ssid", "");
@@ -2540,26 +2600,14 @@ bool connectSavedWiFi() {
   WiFi.setSleep(false);
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
 
-  const uint32_t started = millis();
-  while (WiFi.status() != WL_CONNECTED && millis() - started < 20000) delay(250);
-  if (WiFi.status() != WL_CONNECTED) {
-    LOG_ERR("Wi-Fi connection failed; retaining credentials and entering AP+STA retry mode");
-    WiFi.setAutoReconnect(false);
-    WiFi.disconnect(false, false);
-    delay(100);
-    return false;
-  }
-  WiFi.setAutoReconnect(true);
-  LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
-    WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
-    WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
-#if !CONFIG_ENABLE_CHIPOBLE
-  // On the original ESP32 Matter build, this helper enables STA IPv6 for CHIP.
-  // Run it only after the saved network has proven reachable, so a failed Wi-Fi
-  // attempt never starts Matter's network-status polling before the setup AP.
-  LOG_W("Preparing Matter Wi-Fi/IPv6 network interface");
-  matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
-#endif
+  WiFi.setAutoReconnect(false);
+  WiFi.mode(WIFI_STA);
+  WiFi.setHostname(WIFI_HOSTNAME);
+  WiFi.setSleep(false);
+  WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+  startupWifiStartedAt = millis();
+  startupWifiPending = true;
+  LOG_W("Saved Wi-Fi connection started asynchronously; timeout=20000 ms");
   return true;
 }
 
@@ -5945,41 +5993,17 @@ void setup() {
   bootButtonLastRaw = bootButtonStable;
   bootButtonDebounceAt = millis();
 
-  if (!connectSavedWiFi()) {
-    startPortal();
-    setupWebServer();
-    startWeatherTask();
-    return;
-  }
-
-  // Start HTTP as soon as Wi-Fi is ready. The web UI must not wait for
-  // Matter commissioning/session startup before becoming reachable.
+  // Start HTTP immediately; it is serviced while STA association runs.
   setupWebServer();
   hubLogResourceSnapshot("http-started");
 
-  startMatter();
-  hubLogResourceSnapshot("matter-started");
-  setupMqtt();
-  hubLogResourceSnapshot("mqtt-started");
-  startWeatherTask();
-  hubLogResourceSnapshot("weather-task-scheduled");
-
-  if (MDNS.begin(MDNS_HOSTNAME)) {
-    MDNS.addService("http", "tcp", 80);
-    LOG_W("mDNS: http://%s.local", MDNS_HOSTNAME);
-  } else {
-    LOG_ERR("mDNS startup failed");
+  if (!connectSavedWiFi()) {
+    startPortal();
+    startWeatherTask();
+    return;
   }
-
-  if (String(OTA_PASSWORD) != "CHANGE_ME_GW_OTA_2026" && strlen(OTA_PASSWORD) >= 10) {
-    ArduinoOTA.setHostname(MDNS_HOSTNAME);
-    ArduinoOTA.setPassword(OTA_PASSWORD);
-    ArduinoOTA.begin();
-    LOG_W("OTA enabled; hostname=%s", MDNS_HOSTNAME);
-  } else {
-    LOG_W("OTA disabled: set a unique OTA_PASSWORD (10+ chars) in sketch");
-  }
-  LOG_B("Initialization complete");
+  // The connection and Matter/MQTT startup continue from loop() without
+  // blocking the display, HTTP server, button handling or diagnostics.
 }
 
 
@@ -6014,6 +6038,7 @@ void loop() {
   stageStartedUs = micros();
   server.handleClient();
   hubMeasureLoopStage("http-post", stageStartedUs);
+  serviceStartupWiFi();
   serviceWeatherTaskStartup();
   static uint32_t lastSerialHeartbeatAt=0;
   if((uint32_t)(millis()-lastSerialHeartbeatAt)>=30000UL){
