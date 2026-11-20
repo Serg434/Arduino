@@ -77,7 +77,7 @@ static void diagnosticsWorker(void *) {
     const uint32_t started = millis();
     char output[OUTPUT_CAPACITY] = {0};
     IPAddress ip;
-    const bool resolved = WiFi.status() == WL_CONNECTED && WiFi.hostByName(job.host, ip, 3000) == 1;
+    const bool resolved = WiFi.status() == WL_CONNECTED && WiFi.hostByName(job.host, ip) == 1;
 
     if (WiFi.status() != WL_CONNECTED) {
       strlcpy(output, "ERROR: Wi-Fi is disconnected", sizeof(output));
