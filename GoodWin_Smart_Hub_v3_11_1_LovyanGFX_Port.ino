@@ -584,7 +584,7 @@ struct EffectInfo {
   const char *icon;
 };
 
-const EffectInfo effects[FX_COUNT] = {
+const EffectInfo effects[] = {
   {"Постоянный свет", "Непрерывное свечение", "☀"},
   {"Медленный импульс", "Длинный цикл включения и паузы", "◉"},
   {"Быстрое мигание", "Равномерные короткие вспышки", "ϟ"},
@@ -622,6 +622,8 @@ const EffectInfo effects[FX_COUNT] = {
   {"Звёздный дождь", "Нерегулярные короткие вспышки", "✧"},
   {"Тихий режим", "Очень редкие мягкие сигналы", "☾"}
 };
+static_assert((sizeof(effects) / sizeof(effects[0])) == FX_COUNT,
+              "Effect table must contain exactly FX_COUNT initialized entries");
 
 uint8_t currentEffect = FX_SOLID;
 uint32_t randomTimer = 0;
