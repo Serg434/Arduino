@@ -1846,7 +1846,7 @@ void applyMqttDisplayOrientation(const String &value) {
 }
 
 void mqttCallback(char *topic, uint8_t *payload, unsigned int length) {
-  if (!mqttCommandQueue || !topic || length >= sizeof(MqttQueuedCommand::payload)) { ++mqttCommandDrops; return; }
+  if (!mqttCommandQueue || !topic || strlen(topic) >= sizeof(MqttQueuedCommand::topic) || length >= sizeof(MqttQueuedCommand::payload)) { ++mqttCommandDrops; return; }
   MqttQueuedCommand command = {};
   strlcpy(command.topic, topic, sizeof(command.topic));
   memcpy(command.payload, payload, length);
@@ -1944,7 +1944,7 @@ void setupMqtt() {
   mqttStatusMutex = xSemaphoreCreateMutex();
   loadMqttConfig();
   mqttCommandQueue = xQueueCreate(8, sizeof(MqttQueuedCommand));
-  if (!mqttStatusMutex || !mqttCommandQueue) {
+  if (!mqttConfigMutex || !mqttStatusMutex || !mqttCommandQueue) {
     LOG_ERR("MQTT worker resources allocation failed");
     setMqttStatus("Недостаточно памяти для MQTT worker");
     return;
