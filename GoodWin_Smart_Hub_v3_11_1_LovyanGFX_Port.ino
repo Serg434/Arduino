@@ -2634,19 +2634,38 @@ bool mqttConnectNow() {
   if (mqttConfigMutex) xSemaphoreTake(mqttConfigMutex, portMAX_DELAY);
   host = mqttHost; user = mqttUser; password = mqttPassword; port = mqttPort; enabled = mqttEnabled;
   if (mqttConfigMutex) xSemaphoreGive(mqttConfigMutex);
-  if (!enabled || host.isEmpty() || port == 0) { setMqttStatus(enabled ? "Не указан адрес брокера" : "MQTT выключен"); return false; }
+  const char *hostPtr = host.c_str();
+  if (!enabled || !hostPtr || !hostPtr[0] || port == 0) {
+    setMqttStatus(enabled ? "Не указан адрес брокера" : "MQTT выключен");
+    LOG_ERR("[MQTT] connect aborted: empty or invalid broker host");
+    return false;
+  }
   if (mqttClient.connected()) return true;
-  mqttClient.setServer(host.c_str(), port);
-  String clientId = "GoodWin-" + String((uint32_t)ESP.getEfuseMac(), HEX);
+  mqttClient.setServer(hostPtr, port);
+  char clientId[24];
+  const uint32_t chipId = (uint32_t)ESP.getEfuseMac();
+  const int clientIdLength = snprintf(clientId, sizeof(clientId), "GoodWin-%lx", (unsigned long)chipId);
+  if (clientIdLength <= 0 || (size_t)clientIdLength >= sizeof(clientId)) {
+    setMqttStatus("Ошибка MQTT: не удалось сформировать Client ID");
+    LOG_ERR("[MQTT] connect aborted: invalid Client ID");
+    return false;
+  }
   const bool auth = !user.isEmpty();
+  const char *userPtr = user.c_str();
+  const char *passwordPtr = password.c_str();
+  if (auth && (!userPtr || !passwordPtr)) {
+    setMqttStatus("Ошибка MQTT: не удалось прочитать учетные данные");
+    LOG_ERR("[MQTT] connect aborted: null authentication pointer");
+    return false;
+  }
   char availabilityTopic[MQTT_DISCOVERY_TOPIC_CAPACITY] = {0};
   if (!mqttBuildTopicFixed(availabilityTopic, sizeof(availabilityTopic), "availability")) {
     setMqttStatus("Ошибка MQTT: не удалось сформировать availability topic");
     LOG_ERR("[MQTT] connect aborted: invalid availability topic");
     return false;
   }
-  const bool ok = mqttClient.connect(clientId.c_str(), auth ? user.c_str() : nullptr,
-    auth ? password.c_str() : nullptr, availabilityTopic, 0, true, "offline");
+  const bool ok = mqttClient.connect(clientId, auth ? userPtr : nullptr,
+    auth ? passwordPtr : nullptr, availabilityTopic, 0, true, "offline");
   if (ok) {
     setMqttStatus("Подключено");
     LOG_M("MQTT connected to %s:%u", host.c_str(), port);
