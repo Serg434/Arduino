@@ -21,6 +21,12 @@
 #include <time.h>
 #include <math.h>
 
+// TEMPORARY DIAGNOSTIC BUILD: isolate Arduino-ESP32 Wi-Fi driver initialization.
+// Set to 0 only after the Wi-Fi-only test has identified a working baseline.
+#ifndef GOODWIN_WIFI_ONLY_BOOT
+  #define GOODWIN_WIFI_ONLY_BOOT 1
+#endif
+
 // The selected Arduino target supplies the board profile. Runtime silicon
 // identification below is read from the ESP32 itself.
 #if defined(ARDUINO_BOARD)
@@ -6701,6 +6707,43 @@ void setup() {
     GOODWIN_BOARD_PROFILE, ESP.getChipModel(), ESP.getChipRevision(), ESP.getChipCores(),
     ESP.getCpuFreqMHz(), ESP.getFlashChipSize() / (1024UL * 1024UL),
     ESP.getFlashChipSpeed() / 1000000UL, ESP.getPsramSize() / 1024UL, ESP.getSdkVersion());
+#if GOODWIN_WIFI_ONLY_BOOT
+  // Deliberately bypass ALL application subsystems. Do not initialize the display,
+  // Preferences, Matter, MQTT, HTTP, mDNS, OTA, sensors, SNTP or FreeRTOS workers.
+  // Let Arduino-ESP32 own esp_netif_init() and esp_wifi_init(); never call them here.
+  LOG_B("WIFI_ONLY: starting isolated sequential Wi-Fi mode test");
+
+  auto testWiFiMode = [](const char *label, wifi_mode_t requestedMode) -> bool {
+    LOG_W("WIFI_ONLY: request mode=%s (%u)", label, (unsigned)requestedMode);
+    const bool callOk = WiFi.mode(requestedMode);
+    const wifi_mode_t actualMode = WiFi.getMode();
+    const wl_status_t status = WiFi.status();
+    LOG_W("WIFI_ONLY: result mode=%s call=%s actual=%u status=%u",
+          label, callOk ? "OK" : "FAILED", (unsigned)actualMode, (unsigned)status);
+    if (!callOk || actualMode != requestedMode) {
+      LOG_ERR("WIFI_ONLY: STOP at mode=%s; no further Wi-Fi transitions will be attempted", label);
+      return false;
+    }
+    return true;
+  };
+
+  if (!testWiFiMode("STA", WIFI_STA)) {
+    LOG_ERR("WIFI_ONLY: driver initialization failed at the first STA mode request");
+    while (true) delay(1000);
+  }
+  if (!testWiFiMode("AP", WIFI_AP)) {
+    LOG_ERR("WIFI_ONLY: STA initialized, but transition to AP mode failed");
+    while (true) delay(1000);
+  }
+  if (!testWiFiMode("AP_STA", WIFI_AP_STA)) {
+    LOG_ERR("WIFI_ONLY: STA and AP initialized, but transition to AP+STA failed");
+    while (true) delay(1000);
+  }
+
+  LOG_B("WIFI_ONLY: PASS — STA, AP and AP+STA modes initialized sequentially");
+  LOG_B("WIFI_ONLY: Wi-Fi driver left in AP+STA mode; no AP or STA connection was started");
+  while (true) delay(1000);
+#endif
   setupSmartHubDisplay();
   hubLogResourceSnapshot("display-ready");
   // TEMP DIAGNOSTIC: defer SNTP/configTzTime until Wi-Fi initialization is proven.
