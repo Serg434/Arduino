@@ -1918,16 +1918,16 @@ static void mqttDiscoveryReportFailure(const char *entity, const char *stage, co
 
 static bool mqttValidateDiscoveryJson(const char *entity, const char *topic,
                                       const char *payload, size_t payloadLength) {
-  if (!payload || payloadLength == 0 || payloadLength >= sizeof(mqttDiscoveryValidationBuffer)) {
+  if (!payload || payloadLength == 0 || payloadLength >= MQTT_DISCOVERY_PAYLOAD_CAPACITY) {
     mqttDiscoveryReportFailure(entity, "JSON_INPUT", "EMPTY_OR_OVERSIZED_PAYLOAD",
                                topic, payload, payloadLength);
     return false;
   }
-  memcpy(mqttDiscoveryValidationBuffer, payload, payloadLength);
-  mqttDiscoveryValidationBuffer[payloadLength] = '\0';
+  // Parse the const payload directly. ArduinoJson copies strings into its
+  // document, so the MQTT output buffer remains byte-for-byte unchanged.
   mqttDiscoveryValidationDoc.clear();
   DeserializationError parseError =
-    deserializeJson(mqttDiscoveryValidationDoc, mqttDiscoveryValidationBuffer, payloadLength);
+    deserializeJson(mqttDiscoveryValidationDoc, payload, payloadLength);
   if (parseError) {
     mqttDiscoveryReportFailure(entity, "JSON_PARSE", parseError.c_str(),
                                topic, payload, payloadLength);
