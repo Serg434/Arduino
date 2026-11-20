@@ -98,6 +98,7 @@ static bool initNvsSafely() {
 
 static void runArduinoPath() {
   Serial.println("\n========== PATH 1: ARDUINO WIFI ==========");
+  if (!initNvsSafely()) return;
   Serial.printf("[BEFORE] WiFi.getMode() = %u\n", (unsigned)WiFi.getMode());
   wifi_mode_t mode = WIFI_MODE_NULL;
   printResult("esp_wifi_get_mode() before", esp_wifi_get_mode(&mode));
@@ -111,6 +112,7 @@ static void runArduinoPath() {
 
 static void runEspIdfPath() {
   Serial.println("\n========== PATH 2: DIRECT ESP-IDF ==========");
+  if (!initNvsSafely()) return;
 
   esp_err_t err = esp_netif_init();
   printResult("esp_netif_init()", err);
