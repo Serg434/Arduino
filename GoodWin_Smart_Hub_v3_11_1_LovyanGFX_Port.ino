@@ -477,6 +477,7 @@ static SemaphoreHandle_t mqttConfigMutex = nullptr;
 struct MqttQueuedCommand { char topic[96]; char payload[256]; };
 static void mqttWorkerTask(void *parameter);
 static void processMqttCommands();
+static void applyMqttCommand(const String &topicName, const String &body);
 static void setMqttStatus(const String &status);
 static String getMqttStatus();
 bool resetting = false;
