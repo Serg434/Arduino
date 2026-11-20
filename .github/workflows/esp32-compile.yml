@@ -39,6 +39,7 @@ jobs:
         run: |
           mkdir -p /tmp/GoodWinSmartHub
           cp GoodWin_Smart_Hub_v3_11_1_LovyanGFX_Port.ino /tmp/GoodWinSmartHub/GoodWinSmartHub.ino
+          cp GoodWin_AsyncDiagnostics.h /tmp/GoodWinSmartHub/GoodWin_AsyncDiagnostics.h
 
       - name: Compile for ESP32 Dev Module (Matter 4 MB partition)
         run: |
