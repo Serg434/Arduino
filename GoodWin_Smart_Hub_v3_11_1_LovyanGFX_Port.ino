@@ -3068,33 +3068,25 @@ void startPortal() {
 
   LOG_W("Starting Wi-Fi setup portal in AP+STA mode; saved credentials will be retried");
 
-  // Keep both interfaces enabled: the setup AP remains available while STA
-  // periodically retries the saved router credentials.
-  WiFi.setAutoReconnect(false); // We schedule retries ourselves to avoid overlapping attempts.
-  WiFi.disconnect(false, false);
-  delay(150);
-  WiFi.mode(WIFI_AP_STA);
-  delay(300);
+  // Initialize the Wi-Fi driver before calling any STA/AP operation.
+  // Do not call disconnect() here: on a fresh boot the driver is not installed yet.
+  WiFi.setAutoReconnect(false); // Retries are scheduled by this state machine.
   WiFi.setHostname(WIFI_HOSTNAME);
-  WiFi.setSleep(false);
-  WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  if (!startAccessPoint(true)) {
-    LOG_ERR("First AP+STA start failed; restarting Wi-Fi driver and retrying");
-    WiFi.mode(WIFI_OFF);
-    delay(500);
-    WiFi.mode(WIFI_AP_STA);
-    delay(400);
+  const bool modeReady = WiFi.mode(WIFI_AP_STA);
+  LOG_W("WiFi.mode(AP+STA): result=%s mode=%u status=%u",
+        modeReady ? "OK" : "FAILED", (unsigned)WiFi.getMode(), (unsigned)WiFi.status());
+  if (!modeReady || WiFi.getMode() != WIFI_AP_STA) {
+    LOG_ERR("Wi-Fi driver did not enter AP+STA mode; defer AP startup and retry");
+    lastPortalApRetryAt = millis();
+  } else {
     WiFi.setSleep(false);
     WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    if (!startAccessPoint(true)) {
-      LOG_ERR("Setup AP could not be started after retry; will retry in loop");
+    setupAPStarted = startAccessPoint(true);
+    if (!setupAPStarted) {
+      LOG_ERR("Initial setup AP start failed; will retry without forcing a driver deinit");
       lastPortalApRetryAt = millis();
-    } else {
-      setupAPStarted = true;
     }
-  } else {
-    setupAPStarted = true;
   }
 
   // Start the first background STA attempt shortly after the AP is ready.
@@ -3108,19 +3100,33 @@ bool startAccessPoint(bool recoveryMode) {
   const IPAddress apIP(192, 168, 4, 1);
   const IPAddress gateway(192, 168, 4, 1);
   const IPAddress subnet(255, 255, 255, 0);
+  const wifi_mode_t requiredMode = (recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP;
 
-  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
-    LOG_ERR("softAPConfig failed");
+  // The caller may already have initialized this mode. If not, initialize it
+  // here before touching the AP netif or calling softAPConfig/softAPdisconnect.
+  if (WiFi.getMode() != requiredMode) {
+    const bool modeReady = WiFi.mode(requiredMode);
+    LOG_W("WiFi.mode(%s): result=%s mode=%u status=%u",
+          requiredMode == WIFI_AP_STA ? "AP+STA" : "AP",
+          modeReady ? "OK" : "FAILED", (unsigned)WiFi.getMode(), (unsigned)WiFi.status());
+    if (!modeReady || WiFi.getMode() != requiredMode) {
+      LOG_ERR("Cannot start AP: required Wi-Fi mode is not active");
+      return false;
+    }
   }
 
-  // Fully reset the AP interface before creating it. This avoids stale STA/AP state
-  // after a failed association to a previously saved router.
-  WiFi.softAPdisconnect(true);
-  delay(180);
-  WiFi.mode((recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP);
   WiFi.setSleep(false);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
-  if (!WiFi.softAPConfig(apIP, gateway, subnet)) LOG_ERR("softAPConfig retry failed");
+
+  // Only configure/reset the AP interface after the Wi-Fi driver and mode exist.
+  if (!WiFi.softAPConfig(apIP, gateway, subnet)) {
+    LOG_ERR("softAPConfig failed; mode=%u", (unsigned)WiFi.getMode());
+    return false;
+  }
+
+  // Clear a stale AP instance only after successful driver/mode initialization.
+  WiFi.softAPdisconnect(true);
+  delay(100);
   const bool ok = WiFi.softAP(AP_NAME, AP_PASSWORD, 1, false, 4);
   if (ok) {
     delay(250);
@@ -3151,9 +3157,13 @@ void updatePortalIndicator() {
   if (!setupAPStarted && now - lastPortalApRetryAt >= 5000) {
     lastPortalApRetryAt = now;
     LOG_W("Retrying setup AP start");
-    WiFi.mode(WIFI_AP_STA);
-    delay(100);
-    setupAPStarted = startAccessPoint(true);
+    const bool modeReady = WiFi.getMode() == WIFI_AP_STA || WiFi.mode(WIFI_AP_STA);
+    if (!modeReady || WiFi.getMode() != WIFI_AP_STA) {
+      LOG_ERR("Setup AP retry: AP+STA mode initialization failed");
+      setupAPStarted = false;
+    } else {
+      setupAPStarted = startAccessPoint(true);
+    }
   }
 
   if (WiFi.status() == WL_CONNECTED) {
