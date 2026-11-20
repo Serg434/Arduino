@@ -1695,7 +1695,7 @@ void publishMqttStateNow() {
 static constexpr size_t MQTT_DISCOVERY_PAYLOAD_CAPACITY = 2048;
 static constexpr size_t MQTT_DISCOVERY_TOPIC_CAPACITY = 192;
 static char mqttDiscoveryPayload[MQTT_DISCOVERY_PAYLOAD_CAPACITY];
-static StaticJsonDocument<3072> mqttDiscoveryValidationDoc;
+static StaticJsonDocument<1536> mqttDiscoveryValidationDoc;
 
 class MqttJsonWriter {
 public:
@@ -1799,11 +1799,15 @@ static bool mqttValidateAnyJson(const char *entity, const char *topic,
                                topic, payload, payloadLength);
     return false;
   }
-  // payload is const: ArduinoJson uses read-only parsing and copies strings
-  // into its document, leaving the exact bytes destined for MQTT untouched.
+  // A task-local scratch copy enables ArduinoJson zero-copy parsing. The
+  // parsed strings remain valid until this validator returns; the MQTT source
+  // buffer itself is never modified.
+  char validationBuffer[MQTT_DISCOVERY_PAYLOAD_CAPACITY];
+  memcpy(validationBuffer, payload, payloadLength);
+  validationBuffer[payloadLength] = '\0';
   mqttDiscoveryValidationDoc.clear();
   DeserializationError parseError =
-    deserializeJson(mqttDiscoveryValidationDoc, payload, payloadLength);
+    deserializeJson(mqttDiscoveryValidationDoc, validationBuffer, payloadLength);
   if (parseError) {
     mqttDiscoveryReportFailure(entity, "JSON_PARSE", parseError.c_str(),
                                topic, payload, payloadLength);
@@ -1901,13 +1905,14 @@ static bool mqttJsonAppendDevice(MqttJsonWriter &json, bool &first) {
 static void mqttDiscoveryReportFailure(const char *entity, const char *stage, const char *reason,
                                        const char *topic, const char *payload, size_t payloadLength,
                                        int itemIndex) {
+  const UBaseType_t stackHwm = mqttWorkerTaskHandle ? uxTaskGetStackHighWaterMark(mqttWorkerTaskHandle) : 0;
   Serial.printf("[MQTT][DISCOVERY][ERROR] entity=%s stage=%s reason=%s item=%d topic=%s payload=%u "
-                "mqttBuffer=%u heap=%u largest=%u minHeap=%u\n",
+                "mqttBuffer=%u heap=%u largest=%u minHeap=%u stackHWM=%u\n",
                 entity ? entity : "<null>", stage ? stage : "<null>",
                 reason ? reason : "<null>", itemIndex, topic ? topic : "<null>",
                 (unsigned)payloadLength, (unsigned)mqttClient.getBufferSize(),
                 (unsigned)ESP.getFreeHeap(), (unsigned)ESP.getMaxAllocHeap(),
-                (unsigned)ESP.getMinFreeHeap());
+                (unsigned)ESP.getMinFreeHeap(), (unsigned)stackHwm);
   if (payload && payloadLength) {
     Serial.println("[MQTT][DISCOVERY] rejected payload BEGIN");
     Serial.write(reinterpret_cast<const uint8_t *>(payload), payloadLength);
@@ -1923,11 +1928,14 @@ static bool mqttValidateDiscoveryJson(const char *entity, const char *topic,
                                topic, payload, payloadLength);
     return false;
   }
-  // Parse the const payload directly. ArduinoJson copies strings into its
-  // document, so the MQTT output buffer remains byte-for-byte unchanged.
+  // Use a local mutable copy for zero-copy parsing; keep the original payload
+  // untouched for the subsequent MQTT publish.
+  char validationBuffer[MQTT_DISCOVERY_PAYLOAD_CAPACITY];
+  memcpy(validationBuffer, payload, payloadLength);
+  validationBuffer[payloadLength] = '\0';
   mqttDiscoveryValidationDoc.clear();
   DeserializationError parseError =
-    deserializeJson(mqttDiscoveryValidationDoc, payload, payloadLength);
+    deserializeJson(mqttDiscoveryValidationDoc, validationBuffer, payloadLength);
   if (parseError) {
     mqttDiscoveryReportFailure(entity, "JSON_PARSE", parseError.c_str(),
                                topic, payload, payloadLength);
@@ -2020,9 +2028,11 @@ static bool mqttPublishDiscoveryJson(const char *entity, const char *topic,
                                topic, json.data(), payloadLength);
     return false;
   }
-  LOG_M("[MQTT][DISCOVERY][OK] entity=%s payload=%u packet=%u/%u",
+  const UBaseType_t stackHwm = mqttWorkerTaskHandle ? uxTaskGetStackHighWaterMark(mqttWorkerTaskHandle) : 0;
+  LOG_M("[MQTT][DISCOVERY][OK] entity=%s payload=%u packet=%u/%u heap=%u largest=%u stackHWM=%u",
         entity, (unsigned)payloadLength, (unsigned)requiredPacketBytes,
-        (unsigned)mqttBufferSize);
+        (unsigned)mqttBufferSize, (unsigned)ESP.getFreeHeap(),
+        (unsigned)ESP.getMaxAllocHeap(), (unsigned)stackHwm);
   return true;
 }
 
