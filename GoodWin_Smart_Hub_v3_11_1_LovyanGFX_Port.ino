@@ -2532,9 +2532,8 @@ void updatePortalIndicator() {
       WiFi.mode(WIFI_STA);
       portalMode = false;
       setupAPStarted = false;
-#if !CONFIG_ENABLE_CHIPOBLE
-      matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
-#endif
+// Wi-Fi STA is already connected by the Arduino WiFi layer.
+      // Keep Matter startup identical to the last stable firmware path.
       startMatter();
       setupMqtt();
       if (MDNS.begin(MDNS_HOSTNAME)) {
@@ -2583,10 +2582,10 @@ void startConnectedServices() {
   LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
     WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
-#if !CONFIG_ENABLE_CHIPOBLE
-  LOG_W("Preparing Matter Wi-Fi/IPv6 network interface");
-  matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
-#endif
+// Wi-Fi STA is already connected by serviceStartupWiFi().
+  // Do not reconfigure the STA through Matter before Matter.begin(); this
+  // caused a fabric-removal/restart loop on the affected ESP32 build.
+  LOG_W("Starting Matter on the established Wi-Fi STA interface");
   startMatter();
   hubLogResourceSnapshot("matter-started");
   setupMqtt();
