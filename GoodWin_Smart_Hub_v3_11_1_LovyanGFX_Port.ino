@@ -523,6 +523,14 @@ static bool portalMatterStarted = false;
 static bool startupWifiPending = false;
 static uint32_t startupWifiStartedAt = 0;
 static bool connectedServicesStarted = false;
+static uint8_t portalApStage = 0;
+static uint32_t portalApStageAt = 0;
+static uint8_t recoveryApStage = 0;
+static uint32_t recoveryApStageAt = 0;
+static bool portalStaRetryPending = false;
+static uint32_t portalStaRetryReadyAt = 0;
+static bool recoveryStaRetryPending = false;
+static uint32_t recoveryStaRetryReadyAt = 0;
 
 // ---------- Effects ----------
 enum Effect : uint8_t {
@@ -2373,46 +2381,24 @@ void startPortal() {
   portalMode = true;
   matterStarted = false;
   recoveryAPStarted = false;
+  recoveryApStage = 0;
   setupAPStarted = false;
-  portalLastStaAttemptAt = 0;
+  portalApStage = 1;
+  portalApStageAt = millis();
+  portalLastStaAttemptAt = portalApStageAt;
   portalStaAttemptStartedAt = 0;
   portalStaAttemptInProgress = false;
+  portalStaRetryPending = false;
   portalWifiConnectedSince = 0;
   portalMatterStarted = false;
 
-  LOG_W("Starting Wi-Fi setup portal in AP+STA mode; saved credentials will be retried");
-
-  // Keep both interfaces enabled: the setup AP remains available while STA
-  // periodically retries the saved router credentials.
-  WiFi.setAutoReconnect(false); // We schedule retries ourselves to avoid overlapping attempts.
+  LOG_W("Starting Wi-Fi setup portal asynchronously; saved credentials will be retried");
+  WiFi.setAutoReconnect(false);
   WiFi.disconnect(false, false);
-  delay(150);
-  WiFi.mode(WIFI_AP_STA);
-  delay(300);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.setSleep(false);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
 
-  if (!startAccessPoint(true)) {
-    LOG_ERR("First AP+STA start failed; restarting Wi-Fi driver and retrying");
-    WiFi.mode(WIFI_OFF);
-    delay(500);
-    WiFi.mode(WIFI_AP_STA);
-    delay(400);
-    WiFi.setSleep(false);
-    WiFi.setTxPower(WIFI_POWER_19_5dBm);
-    if (!startAccessPoint(true)) {
-      LOG_ERR("Setup AP could not be started after retry; will retry in loop");
-      lastPortalApRetryAt = millis();
-    } else {
-      setupAPStarted = true;
-    }
-  } else {
-    setupAPStarted = true;
-  }
-
-  // Start the first background STA attempt shortly after the AP is ready.
-  portalLastStaAttemptAt = millis() - 15000;
   portalLedLastToggle = 0;
   portalLedState = false;
   writeLEDLevel(0);
@@ -2427,17 +2413,14 @@ bool startAccessPoint(bool recoveryMode) {
     LOG_ERR("softAPConfig failed");
   }
 
-  // Fully reset the AP interface before creating it. This avoids stale STA/AP state
-  // after a failed association to a previously saved router.
-  WiFi.softAPdisconnect(true);
-  delay(180);
+  // The caller has already staged the interface transition and allowed the
+  // driver to settle; do not block here waiting for AP startup.
   WiFi.mode((recoveryMode || portalMode) ? WIFI_AP_STA : WIFI_AP);
   WiFi.setSleep(false);
   WiFi.setTxPower(WIFI_POWER_19_5dBm);
   if (!WiFi.softAPConfig(apIP, gateway, subnet)) LOG_ERR("softAPConfig retry failed");
   const bool ok = WiFi.softAP(AP_NAME, AP_PASSWORD, 1, false, 4);
   if (ok) {
-    delay(250);
     const IPAddress ip = WiFi.softAPIP();
     if (!captiveDnsStarted) {
       captiveDnsStarted = captiveDns.start(53, "*", apIP);
@@ -2460,14 +2443,75 @@ void updatePortalIndicator() {
     writeLEDLevel(portalLedState ? 35 : 0);
   }
 
+  // Non-blocking AP startup: disconnect -> AP+STA -> AP start, with timed
+  // settling intervals between Wi-Fi driver transitions.
+  if (portalApStage == 1 && now - portalApStageAt >= 150) {
+    WiFi.mode(WIFI_AP_STA);
+    portalApStage = 2;
+    portalApStageAt = now;
+    return;
+  }
+  if (portalApStage == 2 && now - portalApStageAt >= 300) {
+    if (startAccessPoint(true)) {
+      setupAPStarted = true;
+      portalLastStaAttemptAt = now - 15000UL;
+      portalApStage = 0;
+    } else {
+      LOG_ERR("First AP+STA start failed; scheduling Wi-Fi driver restart");
+      WiFi.mode(WIFI_OFF);
+      portalApStage = 3;
+      portalApStageAt = now;
+    }
+    return;
+  }
+  if (portalApStage == 3 && now - portalApStageAt >= 500) {
+    WiFi.mode(WIFI_AP_STA);
+    WiFi.setSleep(false);
+    WiFi.setTxPower(WIFI_POWER_19_5dBm);
+    portalApStage = 4;
+    portalApStageAt = now;
+    return;
+  }
+  if (portalApStage == 4 && now - portalApStageAt >= 400) {
+    setupAPStarted = startAccessPoint(true);
+    if (!setupAPStarted) {
+      LOG_ERR("Setup AP retry after driver restart failed");
+      lastPortalApRetryAt = now;
+    } else {
+      portalLastStaAttemptAt = now - 15000UL;
+    }
+    portalApStage = 0;
+    return;
+  }
+  if (portalApStage == 5 && now - portalApStageAt >= 300) {
+    setupAPStarted = startAccessPoint(true);
+    if (setupAPStarted) portalLastStaAttemptAt = now - 15000UL;
+    portalApStage = 0;
+    return;
+  }
+
   // Keep the setup AP alive even if STA reconnects. Retry saved credentials
   // every 15 seconds, never starting a second attempt while already connected.
-  if (!setupAPStarted && now - lastPortalApRetryAt >= 5000) {
+  if (!setupAPStarted && portalApStage == 0 && now - lastPortalApRetryAt >= 5000) {
     lastPortalApRetryAt = now;
     LOG_W("Retrying setup AP start");
     WiFi.mode(WIFI_AP_STA);
-    delay(100);
-    setupAPStarted = startAccessPoint(true);
+    portalApStage = 5;
+    portalApStageAt = now;
+    return;
+  }
+
+  if (portalStaRetryPending) {
+    if ((int32_t)(now - portalStaRetryReadyAt) >= 0) {
+      portalStaRetryPending = false;
+      portalLastStaAttemptAt = now;
+      portalStaAttemptStartedAt = now;
+      portalStaAttemptInProgress = true;
+      LOG_W("Retrying saved Wi-Fi: %s", wifiSSID.c_str());
+      WiFi.setHostname(WIFI_HOSTNAME);
+      WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+    }
+    return;
   }
 
   if (WiFi.status() == WL_CONNECTED) {
@@ -2511,9 +2555,11 @@ void updatePortalIndicator() {
   if (attemptTimedOut || canStartAttempt) {
     if (attemptTimedOut) {
       LOG_W("Saved Wi-Fi attempt timed out; scheduling another attempt");
-      // Disconnect only the STA interface; keep ESP-SETUP running.
       WiFi.disconnect(false, false);
-      delay(80);
+      portalStaAttemptInProgress = false;
+      portalStaRetryPending = true;
+      portalStaRetryReadyAt = now + 80UL;
+      return;
     }
     portalLastStaAttemptAt = now;
     portalStaAttemptStartedAt = now;
@@ -2613,39 +2659,62 @@ void processWiFiRecovery() {
   if (WiFi.status() != WL_CONNECTED) {
     wifiConnectedSince = 0;
 
-    if (!recoveryAPStarted && (lastWifiRetryAt == 0 || now - lastWifiRetryAt >= 5000)) {
-      lastWifiRetryAt = now;
-      LOG_W("Wi-Fi lost; isolating STA and starting stable recovery AP; Matter fabric is preserved");
-      // Do not let STA keep scanning/reconnecting while the user is trying to join
-      // ESP-SETUP. On a single 2.4 GHz radio, STA channel hopping can destabilize
-      // an AP+STA recovery hotspot. Credentials remain in Preferences; Matter
-      // fabric is not erased. A reboot after saving new Wi-Fi starts Matter again.
-      WiFi.setAutoReconnect(false);
-      WiFi.disconnect(false, false); // Disconnect STA, keep the driver configuration.
-      delay(150);
+    if (recoveryApStage == 1 && now - recoveryApStageAt >= 150) {
       WiFi.mode(WIFI_AP_STA);
-      delay(150);
+      recoveryApStage = 2;
+      recoveryApStageAt = now;
+      return;
+    }
+    if (recoveryApStage == 2 && now - recoveryApStageAt >= 150) {
       if (startAccessPoint(true)) {
         recoveryAPStarted = true;
         lastWifiRetryAt = now;
       } else {
         LOG_ERR("Could not start recovery AP; will retry on next recovery cycle");
+        lastWifiRetryAt = now;
       }
+      recoveryApStage = 0;
+      return;
+    }
+    if (!recoveryAPStarted && recoveryApStage == 0 &&
+        (lastWifiRetryAt == 0 || now - lastWifiRetryAt >= 5000)) {
+      lastWifiRetryAt = now;
+      LOG_W("Wi-Fi lost; scheduling recovery AP; Matter fabric is preserved");
+      WiFi.setAutoReconnect(false);
+      WiFi.disconnect(false, false);
+      recoveryApStage = 1;
+      recoveryApStageAt = now;
+      return;
+    }
+
+    if (recoveryStaRetryPending) {
+      if ((int32_t)(now - recoveryStaRetryReadyAt) >= 0) {
+        recoveryStaRetryPending = false;
+        portalLastStaAttemptAt = now;
+        portalStaAttemptStartedAt = now;
+        portalStaAttemptInProgress = true;
+        WiFi.setHostname(WIFI_HOSTNAME);
+        LOG_W("Retrying saved Wi-Fi in recovery mode: %s", wifiSSID.c_str());
+        WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
+      }
+      return;
     }
 
     // Keep the recovery AP available while retrying the stored router credentials.
-    // Each attempt has a timeout; never call begin() while another STA attempt is active.
     if (wifiSSID.isEmpty()) return;
     const bool attemptTimedOut = portalStaAttemptInProgress &&
                                  (now - portalStaAttemptStartedAt >= 25000);
     const bool canStartAttempt = !portalStaAttemptInProgress &&
                                  (now - portalLastStaAttemptAt >= 15000);
-    if (attemptTimedOut || canStartAttempt) {
-      if (attemptTimedOut) {
-        LOG_W("Recovery STA attempt timed out; retrying while ESP-SETUP stays online");
-        WiFi.disconnect(false, false);
-        delay(80);
-      }
+    if (attemptTimedOut) {
+      LOG_W("Recovery STA attempt timed out; scheduling another attempt");
+      WiFi.disconnect(false, false);
+      portalStaAttemptInProgress = false;
+      recoveryStaRetryPending = true;
+      recoveryStaRetryReadyAt = now + 80UL;
+      return;
+    }
+    if (canStartAttempt) {
       portalLastStaAttemptAt = now;
       portalStaAttemptStartedAt = now;
       portalStaAttemptInProgress = true;
@@ -2656,6 +2725,8 @@ void processWiFiRecovery() {
     return;
   }
 
+  recoveryApStage = 0;
+  recoveryStaRetryPending = false;
   portalStaAttemptInProgress = false;
   if (wifiConnectedSince == 0) wifiConnectedSince = now;
 
@@ -2717,6 +2788,7 @@ void processBootButton() {
 // Factory reset
 // ============================================================
 void factoryReset() {
+  if (resetting && restartPending) return;
   resetting = true;
   LOG_R("Factory reset requested");
   writeLED(false);
@@ -2738,8 +2810,10 @@ void factoryReset() {
     LOG_R("Decommissioning Matter fabric");
     Matter.decommission();
   }
-  delay(1000);
-  ESP.restart();
+  // Allow the decommission request to settle without blocking the main loop.
+  restartPending = true;
+  pendingFactoryReset = false;
+  restartAt = millis() + 1000UL;
 }
 
 // Extract and URL-decode the Matter onboarding payload from Arduino's URL.
@@ -5937,7 +6011,6 @@ void handleHubData() {
 // ============================================================
 void setup() {
   Serial.begin(115200);
-  delay(500);
   Serial.println();
   Serial.println("[BOOT] GoodWin Smart Hub v3.11.3-dev - Serial console ready @115200");
   Serial.flush();
