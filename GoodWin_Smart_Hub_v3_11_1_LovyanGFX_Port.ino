@@ -2501,7 +2501,7 @@ void updatePortalIndicator() {
     return;
   }
 
-  if (portalStaRetryPending) {
+  if (portalStaRetryPending && WiFi.status() != WL_CONNECTED) {
     if ((int32_t)(now - portalStaRetryReadyAt) >= 0) {
       portalStaRetryPending = false;
       portalLastStaAttemptAt = now;
@@ -2515,6 +2515,7 @@ void updatePortalIndicator() {
   }
 
   if (WiFi.status() == WL_CONNECTED) {
+    portalStaRetryPending = false;
     portalStaAttemptInProgress = false;
     if (portalWifiConnectedSince == 0) {
       portalWifiConnectedSince = now;
@@ -2653,7 +2654,7 @@ bool connectSavedWiFi() {
 // Wi-Fi recovery while Matter remains commissioned
 // ============================================================
 void processWiFiRecovery() {
-  if (portalMode) return; // Initial setup portal is already active.
+  if (portalMode || startupWifiPending) return; // Startup association and setup portal own Wi-Fi transitions.
 
   const uint32_t now = millis();
   if (WiFi.status() != WL_CONNECTED) {
