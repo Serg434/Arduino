@@ -249,7 +249,7 @@ static constexpr int16_t HUB_VALUE_CANVAS_W = 114;
 static constexpr int16_t HUB_VALUE_CANVAS_H = 26;
 static lgfx::LGFX_Sprite hubValueCanvas(&hubDisplay);
 // Shared native LovyanGFX sprite: each saver is composed as a complete RGB565
-// scene and transferred with pushSprite/DMA to eliminate clear-then-redraw flicker.
+// scene (RGB332) and transferred with pushSprite/DMA to eliminate clear-then-redraw flicker.
 static lgfx::LGFX_Sprite *hubSaverCanvas = nullptr;
 static int16_t hubSaverCanvasW = 0;
 static int16_t hubSaverCanvasH = 0;
@@ -2787,10 +2787,10 @@ void startMatter() {
 static bool ensureHubMainCanvas() {
   const int16_t w = hubDisplay.width(), h = hubDisplay.height();
   if (w <= 0 || h <= 0) return false;
-  const size_t requiredBytes = (size_t)w * (size_t)h * sizeof(uint16_t);
+  const size_t requiredBytes = (size_t)w * (size_t)h; // RGB332: one byte per pixel
+  // RGB332 reduces the 128x160 scene from 40,960 to 20,480 bytes.
   // Keep a valid compact saver canvas instead of repeatedly attempting an
-  // impossible 40 KB allocation when the largest contiguous heap block is
-  // smaller. Render the main screen directly until memory can satisfy it.
+  // allocation larger than the largest contiguous heap block.
   if ((!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != h ||
        !hubSaverCanvas->getBuffer()) && ESP.getMaxAllocHeap() < requiredBytes) {
     hubRenderTarget = &hubDisplay;
@@ -2801,11 +2801,11 @@ static bool ensureHubMainCanvas() {
     hubSaverCanvasW = hubSaverCanvasH = 0;
     hubSaverCanvas = new lgfx::LGFX_Sprite(&hubDisplay);
     if (hubSaverCanvas) {
-      hubSaverCanvas->setColorDepth(16);
+      hubSaverCanvas->setColorDepth(8); // RGB332: 256 colors, half the RGB565 heap
       if (hubSaverCanvas->createSprite(w, h)) {
         hubSaverCanvasW = w; hubSaverCanvasH = h;
-        LOG_B("Main scene buffer READY %dx%d bytes=%u free=%u largest=%u", w, h,
-              (unsigned)(w * h * 2), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+        LOG_B("Main scene RGB332 buffer READY %dx%d bytes=%u free=%u largest=%u", w, h,
+              (unsigned)(w * h), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
       } else {
         delete hubSaverCanvas; hubSaverCanvas = nullptr;
         LOG_ERR("Main scene buffer allocation failed free=%u largest=%u", ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -2823,6 +2823,8 @@ void setupSmartHubDisplay() {
   // Backlight must be active before panel initialization on this module.
   writeDisplayBacklight();
   hubDisplay.init();
+  LOG_B("Scene framebuffer format=RGB332 (8-bit), expected full-screen=%u bytes",
+        (unsigned)(hubDisplay.width() * hubDisplay.height()));
   hubValueCanvas.setColorDepth(16);
   void *valuePatchBuffer = hubValueCanvas.createSprite(HUB_VALUE_CANVAS_W, HUB_VALUE_CANVAS_H);
   LOG_B("LovyanGFX value sprite: %s (%u bytes)",
@@ -3989,7 +3991,7 @@ static void initHubScreenSaver() {
   hubSaverCanvasFullScreen = (hubSaverId == 13 || hubSaverId == 21 || (hubSaverId >= 22 && hubSaverId <= 26));
   int16_t bandHeight = hubSaverCanvasFullScreen ? h : h - 43;
 
-  // One shared RGB565 scene buffer is used by every animated saver. The
+  // One shared RGB332 scene buffer is used by every animated saver. The
   // visible animation area is composed completely off-screen and transferred
   // in one DMA operation, so no saver exposes an erase-then-redraw sequence.
   if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != bandHeight) {
@@ -4001,7 +4003,7 @@ static void initHubScreenSaver() {
     if (w > 0 && bandHeight > 0) {
       hubSaverCanvas = new lgfx::LGFX_Sprite(&hubDisplay);
       if (hubSaverCanvas) {
-        hubSaverCanvas->setColorDepth(16);
+        hubSaverCanvas->setColorDepth(8); // RGB332
         void *spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
         // A full-screen 40 KB scene is preferred. If the heap is fragmented,
         // gracefully fall back to the proven compact 117 px saver band.
@@ -4011,7 +4013,7 @@ static void initHubScreenSaver() {
           bandHeight = h - 43;
           hubSaverCanvasFullScreen = false;
           if (hubSaverCanvas) {
-            hubSaverCanvas->setColorDepth(16);
+            hubSaverCanvas->setColorDepth(8); // RGB332 fallback
             spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
             LOG_W("Full-screen saver buffer unavailable; using compact %dx%d scene", w, bandHeight);
           }
@@ -4019,8 +4021,8 @@ static void initHubScreenSaver() {
         if (spriteBuffer) {
           hubSaverCanvasW = w;
           hubSaverCanvasH = bandHeight;
-          LOG_B("LovyanGFX saver sprite ready: %dx%d, %u bytes; free=%u largest=%u",
-                w, bandHeight, (unsigned)(w * bandHeight * sizeof(uint16_t)), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
+          LOG_B("LovyanGFX RGB332 saver sprite ready: %dx%d, %u bytes; free=%u largest=%u",
+                w, bandHeight, (unsigned)(w * bandHeight), ESP.getFreeHeap(), ESP.getMaxAllocHeap());
         } else {
           delete hubSaverCanvas;
           hubSaverCanvas = nullptr;
@@ -4869,7 +4871,7 @@ static void drawHubScreenSaverFrame() {
   }
 
   if (presentFrame) {
-    // pushSprite submits the native sprite to the display. Keep its RGB565
+    // pushSprite submits the native RGB565 diagnostic sprite to the display. Keep its buffer
     // buffer unchanged until the destination DMA engine has finished reading it.
     // LGFX_Sprite::pushSprite owns the destination write transaction.
     // Avoid nesting it inside a manual startWrite()/endWrite() pair.
