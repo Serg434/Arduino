@@ -3989,12 +3989,14 @@ static void initHubScreenSaver() {
   // Matrix, Star Warp, the four Windows 95 classics and Neon Rift are immersive
   // full-screen scenes. Other savers keep the branded chrome and compact canvas.
   hubSaverCanvasFullScreen = (hubSaverId == 13 || hubSaverId == 21 || (hubSaverId >= 22 && hubSaverId <= 26));
-  int16_t bandHeight = hubSaverCanvasFullScreen ? h : h - 43;
+  // Keep one persistent full-screen RGB332 allocation for dashboard and savers.
+  // Stable geometry prevents heap churn and direct-render fallback on transitions.
+  const int16_t bandHeight = h;
 
   // One shared RGB332 scene buffer is used by every animated saver. The
   // visible animation area is composed completely off-screen and transferred
   // in one DMA operation, so no saver exposes an erase-then-redraw sequence.
-  if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != bandHeight) {
+  if (!hubSaverCanvas || hubSaverCanvasW != w || hubSaverCanvasH != h || !hubSaverCanvas->getBuffer()) {
     hubDisplay.waitDMA();
     delete hubSaverCanvas;
     hubSaverCanvas = nullptr;
@@ -4005,19 +4007,9 @@ static void initHubScreenSaver() {
       if (hubSaverCanvas) {
         hubSaverCanvas->setColorDepth(8); // RGB332
         void *spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
-        // A full-screen 20 KB RGB332 scene is preferred. If the heap is fragmented,
-        // gracefully fall back to the compact 117 px saver band.
-        if (!spriteBuffer && hubSaverCanvasFullScreen && h > 43) {
-          delete hubSaverCanvas;
-          hubSaverCanvas = new lgfx::LGFX_Sprite(&hubDisplay);
-          bandHeight = h - 43;
-          hubSaverCanvasFullScreen = false;
-          if (hubSaverCanvas) {
-            hubSaverCanvas->setColorDepth(8); // RGB332 fallback
-            spriteBuffer = hubSaverCanvas->createSprite(w, bandHeight);
-            LOG_W("Full-screen saver buffer unavailable; using compact %dx%d scene", w, bandHeight);
-          }
-        }
+        // Do not resize or replace the shared canvas for a compact saver mode.
+        // One full-screen allocation is reused across all UI/saver transitions.
+        if (!spriteBuffer) LOG_ERR("Persistent full-screen RGB332 saver canvas allocation failed");
         if (spriteBuffer) {
           hubSaverCanvasW = w;
           hubSaverCanvasH = bandHeight;
@@ -4151,11 +4143,12 @@ static void drawSaverCanvasBackdrop(lgfx::LGFX_Sprite &cv, int16_t w, int16_t h)
     }
     return;
   }
-  cv.fillGradientRect(0, 0, w, h, 0x10A5, 0x0208);
-  cv.drawFastHLine(8, 3, w - 16, 0x19A7);
-  cv.drawFastHLine(8, h - 4, w - 16, 0x10A4);
-  cv.drawPixel(8, 8, 0x3A0D);
-  cv.drawPixel(w - 9, 8, 0x3A0D);
+  // RGB332 quantizes dark gradients heavily; increase luminance separation.
+  cv.fillGradientRect(0, 0, w, h, 0x294F, 0x0841);
+  cv.drawFastHLine(8, 3, w - 16, 0x3A8F);
+  cv.drawFastHLine(8, h - 4, w - 16, 0x294F);
+  cv.drawPixel(8, 8, 0x5B4F);
+  cv.drawPixel(w - 9, 8, 0x5B4F);
 }
 
 static void drawHubScreenSaverFrame() {
@@ -4871,12 +4864,31 @@ static void drawHubScreenSaverFrame() {
   }
 
   if (presentFrame) {
-    // pushSprite submits the native diagnostic sprite to the display. Keep its buffer
-    // unchanged until the destination DMA engine has finished reading it.
-    // LGFX_Sprite::pushSprite owns the destination write transaction.
-    // Avoid nesting it inside a manual startWrite()/endWrite() pair.
-    cv.pushSprite(0, hubSaverCanvasFullScreen ? 0 : 25);
+    // Present the complete persistent canvas in one transaction.
+    cv.pushSprite(0, 0);
     hubDisplay.waitDMA();
+    // Branded chrome is overlaid after the full-frame transfer so it remains visible.
+    if (!hubSaverCanvasFullScreen) {
+      static const char *SAVER_TITLES[32] = {
+        "", "CLOCK", "ORBIT DOT", "STARS", "RAIN", "SNOW", "CLOUDS", "INDOOR CLIMATE",
+        "WAVE", "PULSE", "AURORA", "DNA / DOUBLE HELIX", "NEBULA DRIFT", "MATRIX RAIN",
+        "COMET TRAILS", "FIREFLIES", "RADAR SWEEP", "PLANETARY ORBIT", "EQUALIZER",
+        "PRISM TUNNEL", "FRACTAL BLOOM", "STAR WARP", "MYSTIFY / WINDOWS 95", "STARFIELD SIMULATION",
+        "3D PIPES CLASSIC", "3D MAZE CLASSIC", "UE5 / NEON RIFT", "PLASMA FIELD", "LAVA LAMP",
+        "VORTEX TUNNEL", "RAIN ON GLASS", "PIXEL FIRE"
+      };
+      hubDisplay.fillRect(0, 0, w, 23, HUB_BG);
+      hubDisplay.fillRect(0, h - 21, w, 21, HUB_BG);
+      hubDisplay.setTextSize(1);
+      hubDisplay.setTextColor(HUB_CYAN, HUB_BG);
+      hubDisplay.setCursor(7, 7);
+      hubDisplay.print(SAVER_TITLES[hubSaverId < HUB_SAVER_COUNT ? hubSaverId : 0]);
+      hubDisplay.drawFastHLine(7, 19, w - 14, HUB_LINE);
+      hubDisplay.drawFastHLine(7, h - 18, w - 14, HUB_LINE);
+      hubDisplay.setTextColor(HUB_MUTED, HUB_BG);
+      hubDisplay.setCursor(7, h - 11);
+      hubDisplay.print("GOODWIN  /  ESP32");
+    }
   }
 
   const uint32_t drawUs = micros() - frameStartedUs;
