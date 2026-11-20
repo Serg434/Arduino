@@ -6,6 +6,7 @@ on:
       - feature/async-core-3-12
       - feature/async-mqtt-dashboard-452448b
       - fix/mqtt-discovery-json-guard
+      - fix/wifi-softap-init-6419b6b
   pull_request:
     branches:
       - dev/lovyangfx-tft-port
