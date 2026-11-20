@@ -2580,10 +2580,16 @@ void updatePortalIndicator() {
 // uses on-network Matter commissioning (CHIPoBLE is not available).
 static void enableMatterIPv6ForSTA() {
 #if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
-  const bool enabled = WiFi.enableIPv6(true);
-  LOG_M("Matter IPv6 link-local enable: %s", enabled ? "OK" : "FAILED");
+  static bool configured = false;
+  if (configured) return;
+  configured = WiFi.enableIPv6(true);
+  LOG_M("Matter IPv6 pre-association setup: %s", configured ? "OK" : "FAILED; will retry");
 #else
-  LOG_ERR("Matter IPv6 support is disabled in this ESP32 build");
+  static bool warningPrinted = false;
+  if (!warningPrinted) {
+    LOG_ERR("Matter IPv6 support is disabled in this ESP32 build");
+    warningPrinted = true;
+  }
 #endif
 }
 
