@@ -636,7 +636,7 @@ void handleLogsStart();
 void handleLogsStop();
 void setupWebServer();
 void startMatter();
-static void enableMatterIPv6();
+static void enableMatterIPv6ForSTA();
 void updateEffects();
 void setEffect(uint8_t effect);
 void setPower(bool state);
@@ -2513,6 +2513,7 @@ void updatePortalIndicator() {
       portalStaAttemptInProgress = true;
       LOG_W("Retrying saved Wi-Fi: %s", wifiSSID.c_str());
       WiFi.setHostname(WIFI_HOSTNAME);
+      enableMatterIPv6ForSTA();
       WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
     }
     return;
@@ -2536,7 +2537,6 @@ void updatePortalIndicator() {
       WiFi.mode(WIFI_STA);
       portalMode = false;
       setupAPStarted = false;
-      enableMatterIPv6();
       // Wi-Fi STA is already connected. Start Matter without waiting for a controller.
       startMatter();
       setupMqtt();
@@ -2570,14 +2570,15 @@ void updatePortalIndicator() {
     portalStaAttemptInProgress = true;
     LOG_W("Retrying saved Wi-Fi: %s", wifiSSID.c_str());
     WiFi.setHostname(WIFI_HOSTNAME);
+    enableMatterIPv6ForSTA();
     WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
   }
 }
 
 
-// Enable IPv6 on the already-connected STA before starting Matter. The original
-// ESP32 Arduino build uses on-network commissioning (CHIPoBLE is not available).
-static void enableMatterIPv6() {
+// Enable IPv6 on the STA before WiFi.begin(). The original ESP32 Arduino build
+// uses on-network Matter commissioning (CHIPoBLE is not available).
+static void enableMatterIPv6ForSTA() {
 #if defined(CONFIG_LWIP_IPV6) && CONFIG_LWIP_IPV6
   const bool enabled = WiFi.enableIPv6(true);
   LOG_M("Matter IPv6 link-local enable: %s", enabled ? "OK" : "FAILED");
@@ -2601,7 +2602,6 @@ void startConnectedServices() {
   // Do not reconfigure the STA through Matter before Matter.begin(); this
   // caused a fabric-removal/restart loop on the affected ESP32 build.
   LOG_W("Starting Matter on the established Wi-Fi STA interface");
-  enableMatterIPv6();
   startMatter();
   hubLogResourceSnapshot("matter-started");
   setupMqtt();
@@ -2658,6 +2658,7 @@ bool connectSavedWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.setSleep(false);
+  enableMatterIPv6ForSTA();
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
   startupWifiStartedAt = millis();
   startupWifiPending = true;
@@ -2711,6 +2712,7 @@ void processWiFiRecovery() {
         portalStaAttemptInProgress = true;
         WiFi.setHostname(WIFI_HOSTNAME);
         LOG_W("Retrying saved Wi-Fi in recovery mode: %s", wifiSSID.c_str());
+        enableMatterIPv6ForSTA();
         WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
       }
       return;
@@ -2736,6 +2738,7 @@ void processWiFiRecovery() {
       portalStaAttemptInProgress = true;
       WiFi.setHostname(WIFI_HOSTNAME);
       LOG_W("Retrying saved Wi-Fi in recovery mode: %s", wifiSSID.c_str());
+      enableMatterIPv6ForSTA();
       WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
     }
     return;
