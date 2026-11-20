@@ -20,6 +20,7 @@
 #include <esp_netif.h>
 #include <esp_event.h>
 #include <esp_err.h>
+#include <nvs_flash.h>
 #include <esp_idf_version.h>
 
 #ifndef WIFI_TEST_PATH
@@ -73,6 +74,26 @@ static bool testArduinoMode(const char *label, wifi_mode_t requested) {
 
   Serial.printf("[PASS] Arduino path entered %s.\n", label);
   return true;
+}
+
+static bool initNvsSafely() {
+  Serial.println("\\n========== NVS INITIALIZATION ==========");
+  esp_err_t err = nvs_flash_init();
+  printResult("nvs_flash_init()", err);
+
+  if (err == ESP_OK) {
+    Serial.println("[PASS] NVS initialized; existing stored data was preserved.");
+    return true;
+  }
+
+  if (err == ESP_ERR_NVS_NO_FREE_PAGES || err == ESP_ERR_NVS_NEW_VERSION_FOUND) {
+    Serial.println("[STOP] NVS reports no free pages or a version mismatch.");
+    Serial.println("[SAFEGUARD] No erase/reformat will be attempted.");
+    return false;
+  }
+
+  Serial.println("[STOP] NVS initialization failed. Wi-Fi test will not continue.");
+  return false;
 }
 
 static void runArduinoPath() {
