@@ -33,7 +33,7 @@ jobs:
           arduino-cli lib update-index
           arduino-cli lib install "LovyanGFX"
           arduino-cli lib install "PubSubClient"
-          arduino-cli lib install "ArduinoJson"
+          arduino-cli lib install "ArduinoJson@6.21.5"
           arduino-cli lib install "DHT sensor library"
           arduino-cli lib install "Adafruit Unified Sensor"
 
