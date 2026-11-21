@@ -81,6 +81,11 @@ static const char *goodwinFlashModeName(FlashMode_t mode) {
 #define LOG_RESET      1
 #define LOG_STATUS     1
 
+// Temporary resource-isolation switches for HTTP server validation.
+// Keep subsystem implementations intact; set to 1 when ready to re-enable.
+#define GOODWIN_ENABLE_MATTER 0
+#define GOODWIN_ENABLE_MQTT   0
+
 // Diagnostic ring buffer is allocated only while web diagnostics are explicitly enabled.
 static constexpr uint8_t WEB_LOG_CAPACITY = 40;
 static constexpr size_t WEB_LOG_LINE_SIZE = 160;
@@ -2665,6 +2670,12 @@ bool mqttConfigured() {
 }
 
 void setupMqtt() {
+#if !GOODWIN_ENABLE_MQTT
+  mqttConnectedSnapshot = false;
+  mqttLastError = "MQTT временно отключён для проверки HTTP";
+  LOG_M("MQTT temporarily disabled; no MQTT buffers, mutexes, queue or worker task allocated");
+  return;
+#endif
   mqttConfigMutex = xSemaphoreCreateMutex();
   mqttStatusMutex = xSemaphoreCreateMutex();
   loadMqttConfig();
@@ -3200,7 +3211,7 @@ void updatePortalIndicator() {
     }
 
     if (!portalMatterStarted && now - portalWifiConnectedSince >= 30000) {
-      LOG_W("Wi-Fi stable; closing setup AP and starting Matter/MQTT");
+      LOG_W("Wi-Fi stable; closing setup AP; Matter/MQTT startup follows build-time switches");
       if (captiveDnsStarted) {
         captiveDns.stop();
         captiveDnsStarted = false;
@@ -3209,11 +3220,15 @@ void updatePortalIndicator() {
       WiFi.mode(WIFI_STA);
       portalMode = false;
       setupAPStarted = false;
-#if !CONFIG_ENABLE_CHIPOBLE
+#if GOODWIN_ENABLE_MATTER
+  #if !CONFIG_ENABLE_CHIPOBLE
       matterConnectWiFi(wifiSSID.c_str(), wifiPassword.c_str());
-#endif
+  #endif
       startMatter();
+#endif
+#if GOODWIN_ENABLE_MQTT
       setupMqtt();
+#endif
       if (MDNS.begin(MDNS_HOSTNAME)) {
         MDNS.addService("http", "tcp", 80);
         LOG_W("mDNS: http://%s.local", MDNS_HOSTNAME);
@@ -3257,13 +3272,22 @@ void startConnectedServices() {
     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
     WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
 // Wi-Fi STA is already connected by serviceStartupWiFi().
-  // Wi-Fi association belongs to the Hub asynchronous state machine. Matter
-  // starts only after STA is connected; avoid the library's blocking Wi-Fi helper.
+  // Wi-Fi association belongs to the Hub asynchronous state machine.
+#if GOODWIN_ENABLE_MATTER
   LOG_W("Starting Matter on the established Wi-Fi STA interface");
   startMatter();
   hubLogResourceSnapshot("matter-started");
+#else
+  LOG_M("Matter startup skipped by GOODWIN_ENABLE_MATTER=0");
+  hubLogResourceSnapshot("matter-disabled");
+#endif
+#if GOODWIN_ENABLE_MQTT
   setupMqtt();
   hubLogResourceSnapshot("mqtt-started");
+#else
+  LOG_M("MQTT startup skipped by GOODWIN_ENABLE_MQTT=0");
+  hubLogResourceSnapshot("mqtt-disabled");
+#endif
   startWeatherTask();
   hubLogResourceSnapshot("weather-task-scheduled");
   if (MDNS.begin(MDNS_HOSTNAME)) {
@@ -3316,7 +3340,9 @@ bool connectSavedWiFi() {
   WiFi.mode(WIFI_STA);
   WiFi.setHostname(WIFI_HOSTNAME);
   WiFi.setSleep(false);
+#if GOODWIN_ENABLE_MATTER
   enableMatterIPv6ForSTA();
+#endif
   WiFi.begin(wifiSSID.c_str(), wifiPassword.c_str());
   startupWifiStartedAt = millis();
   startupWifiPending = true;
@@ -3640,6 +3666,13 @@ static bool updateClimateMatterValues(float temperatureC, float humidityPercent)
 // Matter initialization
 // ============================================================
 void startMatter() {
+#if !GOODWIN_ENABLE_MATTER
+  matterStarted = false;
+  climateEndpointReady = false;
+  climateEndpointId = 0;
+  LOG_M("Matter temporarily disabled for HTTP server validation; Matter stack and endpoints not initialized");
+  return;
+#endif
   LOG_M("Initializing Matter endpoint");
 
   Matter.setVendorName(DEVICE_VENDOR);
