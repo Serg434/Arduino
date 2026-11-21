@@ -1,6 +1,6 @@
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WebServer.h>
+#include <PsychicHttp.h>
 #include <Preferences.h>
 #include <Matter.h>
 #include <esp_matter.h>
@@ -429,6 +429,52 @@ static const char *OTA_PASSWORD = "CHANGE_ME_GW_OTA_2026";
 static constexpr uint16_t MQTT_DEFAULT_PORT = 1883;
 static const char *MQTT_DEFAULT_ROOT = "goodwin/GW-ESP32-001";
 
+// PsychicHttp compatibility adapter. ENABLE_ASYNC remains disabled: callbacks
+// execute serially in the HTTPD task; network I/O is no longer part of loop().
+class GoodWinPsychicWebServer {
+  using Handler=void(*)();
+  PsychicHttpServer _http;
+  PsychicRequest *_request=nullptr;
+  PsychicResponse *_response=nullptr;
+public:
+  explicit GoodWinPsychicWebServer(uint16_t port):_http(port){}
+  void configure(){
+    _http.config.stack_size=8192;
+    _http.config.core_id=0;          // Keep HTTP away from Arduino loopTask (core 1).
+    _http.config.task_priority=2;     // Below Matter/system tasks; above the MQTT worker.
+    _http.config.max_open_sockets=4;
+    _http.config.lru_purge_enable=true;
+    _http.maxRequestBodySize=1024;
+  }
+  void on(const char *uri,int method,Handler handler){
+    _http.on(uri,method,[this,handler](PsychicRequest *req,PsychicResponse *res)->esp_err_t{
+      _request=req;_response=res;if(handler)handler();_request=nullptr;_response=nullptr;return ESP_OK;
+    });
+  }
+  void onNotFound(std::function<void()> handler){
+    _http.onNotFound([this,handler](PsychicRequest *req,PsychicResponse *res)->esp_err_t{
+      _request=req;_response=res;if(handler)handler();_request=nullptr;_response=nullptr;return ESP_OK;
+    });
+  }
+  bool isConnected(){return _http.isConnected();}
+  bool isRunning(){return _http.isRunning();}
+  bool begin(){return _http.begin()==ESP_OK;}
+  uint16_t stackSize()const{return (uint16_t)_http.config.stack_size;}
+  http_method method()const{return _request?_request->method():HTTP_GET;}
+  bool hasArg(const char *name){if(!_request||!name)return false;_request->loadParams();return _request->hasParam(name);}
+  String arg(const char *name){
+    if(!_request||!name)return String();_request->loadParams();
+    PsychicWebParameter *p=_request->getParam(name);return p?p->value():String();
+  }
+  void sendHeader(const char *name,const char *value){if(_response&&name&&value)_response->addHeader(name,value);}
+  void send(int code,const char *type,const char *body){if(_response)_response->send(code,type,body?body:"");}
+  void send(int code,const char *type,const String &body){if(_response)_response->send(code,type,body.c_str());}
+  void send_P(int code,const char *type,const char *body){
+    // ESP32 flash is memory-mapped: PROGMEM is sent directly, without a RAM copy.
+    if(_response)_response->send(code,type,body?body:"");
+  }
+};
+
 // ---------- Global objects ----------
 MatterDimmableLight DimmableLight;       // GoodWin Lamp
 MatterDimmableLight DisplayDimmer;        // GoodWin Display
@@ -440,7 +486,7 @@ static uint16_t climateEndpointId = 0;
 static bool climateEndpointReady = false;
 Preferences netPrefs;
 Preferences statePrefs;
-WebServer server(80);
+GoodWinPsychicWebServer server(80);
 WiFiClient mqttNetwork;
 PubSubClient mqttClient(mqttNetwork);
 
@@ -700,6 +746,20 @@ void handleHubSaverStart();
 void handleHubData();
 void hubMarkActivity();
 
+// State-changing HTTP callbacks enqueue work for the main loop.
+enum HubWebCommandType:uint8_t{HUB_WEB_CMD_POWER=1,HUB_WEB_CMD_BRIGHTNESS,HUB_WEB_CMD_SPEED,HUB_WEB_CMD_EFFECT,HUB_WEB_CMD_SCAN_START,HUB_WEB_CMD_CONFIG,HUB_WEB_CMD_SAVER_START,HUB_WEB_CMD_WEATHER_SOURCE,HUB_WEB_CMD_WIFI_SAVE,HUB_WEB_CMD_WIFI_RESET,HUB_WEB_CMD_FACTORY_RESET};
+enum HubWebConfigMask:uint16_t{HUB_WEB_CFG_LAYOUT=1U<<0,HUB_WEB_CFG_SAVER=1U<<1,HUB_WEB_CFG_IDLE=1U<<2,HUB_WEB_CFG_ORIENTATION=1U<<3,HUB_WEB_CFG_DISPLAY=1U<<4,HUB_WEB_CFG_TEST_FPS=1U<<5,HUB_WEB_CFG_BRIGHTNESS=1U<<6};
+struct HubWebCommand{
+  uint8_t type=0;uint16_t value=0,saverIdle=0,configMask=0;
+  uint8_t layout=0,saver=0,orientation=0,display=0,brightness=0,testFps=0;
+  char ssid[33]={0},password[65]={0};
+};
+static QueueHandle_t webCommandQueue=nullptr;
+static bool webRoutesRegistered=false;
+static SemaphoreHandle_t webTextMutex=nullptr;
+static bool queueHubWebCommand(const HubWebCommand &c){return webCommandQueue&&xQueueSend(webCommandQueue,&c,0)==pdPASS;}
+static void serviceWebCommandQueue();
+
 // ============================================================
 // LED PWM + persistent state
 // ============================================================
@@ -814,9 +874,9 @@ bool setDisplayState(bool state, uint8_t matterBrightness) {
   if (!powerChanged && !brightnessChanged) return true;
 
   hubMarkActivity();
-  displayMatterOn = state;
-  hubDisplayEnabled = state;
-  displayBrightnessPercent = requestedBrightness;
+  portENTER_CRITICAL(&hubDataMux);
+  displayMatterOn=state;hubDisplayEnabled=state;displayBrightnessPercent=requestedBrightness;
+  portEXIT_CRITICAL(&hubDataMux);
 
   // Backlight brightness is a hardware PWM change, not a reason to repaint pixels.
   // Only an actual display power transition requires a full redraw.
@@ -2755,14 +2815,15 @@ void handleMqttSave() {
   if (root.indexOf(' ') >= 0 || root.indexOf('#') >= 0 || root.indexOf('+') >= 0) {
     server.send(400, "text/plain", "Invalid MQTT root topic"); return;
   }
+  if(mqttConfigMutex)xSemaphoreTake(mqttConfigMutex,portMAX_DELAY);
   Preferences prefs;
-  prefs.begin("mqttcfg", false);
-  String password = prefs.getString("pass", "");
-  if (server.hasArg("clear_password") && server.arg("clear_password") == "1") password = "";
-  else if (server.hasArg("password") && !server.arg("password").isEmpty()) password = server.arg("password");
-  prefs.putBool("enabled", enabled); prefs.putString("host", host); prefs.putUShort("port", (uint16_t)port);
-  prefs.putString("user", user); prefs.putString("pass", password); prefs.putString("root", root);
-  prefs.end();
+  prefs.begin("mqttcfg",false);
+  String password=prefs.getString("pass","");
+  if(server.hasArg("clear_password")&&server.arg("clear_password")=="1")password="";
+  else if(server.hasArg("password")&&!server.arg("password").isEmpty())password=server.arg("password");
+  prefs.putBool("enabled",enabled);prefs.putString("host",host);prefs.putUShort("port",(uint16_t)port);
+  prefs.putString("user",user);prefs.putString("pass",password);prefs.putString("root",root);prefs.end();
+  if(mqttConfigMutex)xSemaphoreGive(mqttConfigMutex);
   mqttReconfigureRequested = true;
   setMqttStatus(enabled ? "Настройки сохранены · подключение…" : "MQTT выключен");
   server.send(200, "application/json", "{\"ok\":true}");
@@ -2775,19 +2836,10 @@ void handleMqttTest() {
     "{\"ok\":true,\"queued\":true,\"message\":\"Проверка подключения поставлена в очередь\"}");
 }
 
-void handleScanStart() {
-  if (portalMode && WiFi.getMode() == WIFI_AP) WiFi.mode(WIFI_AP_STA);
-  if (WiFi.scanComplete() == WIFI_SCAN_RUNNING) {
-    server.send(200, "application/json", "{\"started\":true,\"scanning\":true}");
-    return;
-  }
-  WiFi.scanDelete();
-  const int16_t result = WiFi.scanNetworks(true, true);
-  if (result == WIFI_SCAN_FAILED) {
-    server.send(500, "application/json", "{\"started\":false}");
-    return;
-  }
-  server.send(200, "application/json", "{\"started\":true,\"scanning\":true}");
+void handleScanStart(){
+  if(WiFi.scanComplete()==WIFI_SCAN_RUNNING){server.send(200,"application/json","{\"started\":true,\"scanning\":true}");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_SCAN_START;bool q=queueHubWebCommand(c);
+  server.send(q?200:503,"application/json",q?"{\"started\":true,\"scanning\":true}":"{\"started\":false}");
 }
 
 void handleScanResults() {
@@ -2813,6 +2865,10 @@ void handleScanResults() {
 }
 
 void handleApi() {
+  String pairingCodeCopy,pairingQRCopy;
+  if(webTextMutex)xSemaphoreTake(webTextMutex,portMAX_DELAY);
+  pairingCodeCopy=pairingCode;pairingQRCopy=pairingQR;
+  if(webTextMutex)xSemaphoreGive(webTextMutex);
   String json;
   json.reserve(1000);
   json = "{";
@@ -2837,8 +2893,8 @@ void handleApi() {
   json += "\"matter\":\""; json += (matterStarted ? "RUNNING" : "NOT STARTED"); json += "\",";
   json += "\"commissioned\":";
   json += (matterIsCommissioned() ? "true" : "false");
-  json += ",\"code\":\""; json += pairingCode; json += "\",";
-  json += "\"qr\":\""; json += pairingQR; json += "\",";
+  json += ",\"code\":\""; json += pairingCodeCopy; json += "\",";
+  json += "\"qr\":\""; json += pairingQRCopy; json += "\",";
   json += "\"mqttEnabled\":" + String(mqttEnabled ? "true" : "false") + ",";
   json += "\"mqttConnected\":" + String(mqttConnectedSnapshot ? "true" : "false") + ",";
   json += "\"mqttStatus\":\"" + jsonEscape(getMqttStatus()) + "\",\"hubLayout\":" + String(hubLayoutId) + ",\"weatherValid\":" + String(weatherValid ? "true" : "false") + "}";
@@ -2878,73 +2934,49 @@ void handleSystemMetrics() {
   server.send(200, "application/json; charset=utf-8", json);
 }
 
-void handleOn() { setPower(true); server.send(200, "text/plain", "OK"); }
-void handleOff() { setPower(false); server.send(200, "text/plain", "OK"); }
+void handleOn(){HubWebCommand c={};c.type=HUB_WEB_CMD_POWER;c.value=1;bool q=queueHubWebCommand(c);server.send(q?200:503,"text/plain",q?"OK":"Command queue full");}
+void handleOff(){HubWebCommand c={};c.type=HUB_WEB_CMD_POWER;c.value=0;bool q=queueHubWebCommand(c);server.send(q?200:503,"text/plain",q?"OK":"Command queue full");}
 
-void handleBrightness() {
-  if (!server.hasArg("value")) { server.send(400, "text/plain", "Missing value"); return; }
-  int value = server.arg("value").toInt();
-  if (value < 1 || value > 100) { server.send(400, "text/plain", "Brightness must be 1..100"); return; }
-  setBrightness((uint8_t)value);
-  server.send(200, "text/plain", "OK");
+void handleBrightness(){
+  if(!server.hasArg("value")){server.send(400,"text/plain","Missing value");return;}
+  int v=server.arg("value").toInt();if(v<1||v>100){server.send(400,"text/plain","Brightness must be 1..100");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_BRIGHTNESS;c.value=v;bool q=queueHubWebCommand(c);server.send(q?200:503,"text/plain",q?"OK":"Command queue full");
 }
 
-void handleSpeed() {
-  if (!server.hasArg("value")) { server.send(400, "text/plain", "Missing value"); return; }
-  int value = server.arg("value").toInt();
-  if (value < 25 || value > 300) { server.send(400, "text/plain", "Speed must be 25..300"); return; }
-  setEffectSpeed((uint16_t)value);
-  server.send(200, "text/plain", "OK");
+void handleSpeed(){
+  if(!server.hasArg("value")){server.send(400,"text/plain","Missing value");return;}
+  int v=server.arg("value").toInt();if(v<25||v>300){server.send(400,"text/plain","Speed must be 25..300");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_SPEED;c.value=v;bool q=queueHubWebCommand(c);server.send(q?200:503,"text/plain",q?"OK":"Command queue full");
 }
 
-void handleEffect() {
-  if (server.hasArg("id")) {
-    const int id = server.arg("id").toInt();
-    if (id >= 0 && id < FX_COUNT) setEffect((uint8_t)id);
-    else { server.send(400, "text/plain", "Invalid effect"); return; }
-  }
-  server.send(200, "text/plain", "OK");
+void handleEffect(){
+  if(server.hasArg("id")){int id=server.arg("id").toInt();if(id<0||id>=FX_COUNT){server.send(400,"text/plain","Invalid effect");return;}
+    HubWebCommand c={};c.type=HUB_WEB_CMD_EFFECT;c.value=id;bool q=queueHubWebCommand(c);server.send(q?200:503,"text/plain",q?"OK":"Command queue full");return;}
+  server.send(200,"text/plain","OK");
 }
 
-void handleWiFiSave() {
-  String ssid = server.arg("ssid");
-  String password = server.arg("password");
-  ssid.trim();
-  if (ssid.isEmpty()) { server.send(400, "text/plain", "SSID required"); return; }
-
-  netPrefs.begin("netcfg", false);
-  netPrefs.putString("ssid", ssid);
-  netPrefs.putString("password", password);
-  netPrefs.end();
-
-  server.send(200, "text/html; charset=utf-8",
-    "<!doctype html><html lang='ru'><meta charset='utf-8'><body style='background:#101827;color:white;font-family:Arial;padding:40px'><h2>Настройки сохранены</h2><p>Устройство перезапускается...</p></body></html>");
-  restartPending = true;
-  pendingFactoryReset = false;
-  restartAt = millis() + 900;
+void handleWiFiSave(){
+  String ssid=server.arg("ssid"),password=server.arg("password");ssid.trim();
+  if(ssid.isEmpty()){server.send(400,"text/plain","SSID required");return;}
+  if(ssid.length()>32||password.length()>64){server.send(400,"text/plain","Wi-Fi credentials too long");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_WIFI_SAVE;strlcpy(c.ssid,ssid.c_str(),sizeof(c.ssid));strlcpy(c.password,password.c_str(),sizeof(c.password));
+  if(!queueHubWebCommand(c)){server.send(503,"text/plain","Command queue full");return;}
+  server.send(200,"text/html; charset=utf-8","<!doctype html><html lang='ru'><meta charset='utf-8'><body style='background:#101827;color:white;font-family:Arial;padding:40px'><h2>Настройки сохранены</h2><p>Устройство перезапускается...</p></body></html>");
 }
 
-void handleReset() {
-  if (resetting) { server.send(409, "text/plain", "Reset already in progress"); return; }
-  resetting = true;
-  server.send(200, "text/plain", "Factory reset started");
-  restartPending = true;
-  pendingFactoryReset = true;
-  restartAt = millis() + 300;
+void handleReset(){
+  if(resetting){server.send(409,"text/plain","Reset already in progress");return;}
+  resetting=true;HubWebCommand c={};c.type=HUB_WEB_CMD_FACTORY_RESET;
+  if(!queueHubWebCommand(c)){resetting=false;server.send(503,"text/plain","Command queue full");return;}
+  server.send(200,"text/plain","Factory reset started");
 }
 
 // Clear only Wi-Fi credentials. Matter commissioning/fabric is preserved.
-void handleWiFiReset() {
-  if (resetting) { server.send(409, "text/plain", "Reset already in progress"); return; }
-  resetting = true;
-  netPrefs.begin("netcfg", false);
-  netPrefs.clear();
-  netPrefs.end();
-  server.send(200, "text/plain", "Wi-Fi settings cleared; rebooting");
-  restartPending = true;
-  pendingFactoryReset = false;
-  restartAt = millis() + 400;
-  LOG_R("Wi-Fi credentials cleared; Matter fabric preserved");
+void handleWiFiReset(){
+  if(resetting){server.send(409,"text/plain","Reset already in progress");return;}
+  resetting=true;HubWebCommand c={};c.type=HUB_WEB_CMD_WIFI_RESET;
+  if(!queueHubWebCommand(c)){resetting=false;server.send(503,"text/plain","Command queue full");return;}
+  server.send(200,"text/plain","Wi-Fi settings cleared; rebooting");
 }
 
 void handleLogsStart() {
@@ -3002,42 +3034,82 @@ void handleLogsClear() {
   server.send(200, "text/plain; charset=utf-8", "OK");
 }
 
-void setupWebServer() {
-  server.on("/", HTTP_GET, handleRoot);
-  server.on("/dashboard", HTTP_GET, handleDashboard);
-  server.on("/api", HTTP_GET, handleApi);
-  server.on("/system", HTTP_GET, handleSystemMetrics);
-  server.on("/weather/refresh", HTTP_POST, handleWeatherRefresh);
-  server.on("/weather/source", HTTP_POST, handleWeatherSource);
-  server.on("/hub/config", HTTP_GET, handleHubConfig);
-  server.on("/hub/config", HTTP_POST, handleHubConfig);
-  server.on("/hub/saver/start", HTTP_POST, handleHubSaverStart);
-  server.on("/hub/data", HTTP_GET, handleHubData);
-  server.on("/logs", HTTP_GET, handleLogs);
-  server.on("/logs/start", HTTP_POST, handleLogsStart);
-  server.on("/logs/stop", HTTP_POST, handleLogsStop);
-  server.on("/logs/clear", HTTP_POST, handleLogsClear);
-  server.on("/mqtt/config", HTTP_GET, handleMqttConfigGet);
-  server.on("/mqtt/save", HTTP_POST, handleMqttSave);
-  server.on("/mqtt/test", HTTP_POST, handleMqttTest);
-  server.on("/scan", HTTP_GET, handleScanStart);
-  server.on("/scan-results", HTTP_GET, handleScanResults);
-  server.on("/on", HTTP_GET, handleOn);
-  server.on("/off", HTTP_GET, handleOff);
-  server.on("/brightness", HTTP_GET, handleBrightness);
-  server.on("/speed", HTTP_GET, handleSpeed);
-  server.on("/effect", HTTP_GET, handleEffect);
-  server.on("/wifi", HTTP_POST, handleWiFiSave);
-  server.on("/reset", HTTP_GET, handleReset);
-  server.on("/wifi-reset", HTTP_POST, handleWiFiReset);
-  server.onNotFound([]() {
-    server.sendHeader("Location", "/");
-    server.send(302, "text/plain", "");
-  });
-  server.begin();
-  LOG_H("HTTP server started on port 80; mode=%u STA=%s AP=%s GW=%s MASK=%s",
-    (unsigned)WiFi.getMode(), WiFi.localIP().toString().c_str(), WiFi.softAPIP().toString().c_str(),
-    WiFi.gatewayIP().toString().c_str(), WiFi.subnetMask().toString().c_str());
+static void serviceWebServerStartup(){
+  if(!webRoutesRegistered||server.isRunning()||!server.isConnected())return;
+  if(!server.begin()){LOG_ERR("PsychicHttp start failed; retrying when network is ready");return;}
+  LOG_H("PsychicHttp started port=80 stack=%u core=0 priority=2 sockets=4 maxBody=1024 mode=%u STA=%s AP=%s",
+    server.stackSize(),(unsigned)WiFi.getMode(),WiFi.localIP().toString().c_str(),WiFi.softAPIP().toString().c_str());
+  hubLogResourceSnapshot("http-started");
+}
+void setupWebServer(){
+  if(webRoutesRegistered)return;server.configure();
+  server.on("/",HTTP_GET,handleRoot);server.on("/dashboard",HTTP_GET,handleDashboard);
+  server.on("/api",HTTP_GET,handleApi);server.on("/system",HTTP_GET,handleSystemMetrics);
+  server.on("/weather/refresh",HTTP_POST,handleWeatherRefresh);server.on("/weather/source",HTTP_POST,handleWeatherSource);
+  server.on("/hub/config",HTTP_GET,handleHubConfig);server.on("/hub/config",HTTP_POST,handleHubConfig);
+  server.on("/hub/saver/start",HTTP_POST,handleHubSaverStart);server.on("/hub/data",HTTP_GET,handleHubData);
+  server.on("/logs",HTTP_GET,handleLogs);server.on("/logs/start",HTTP_POST,handleLogsStart);
+  server.on("/logs/stop",HTTP_POST,handleLogsStop);server.on("/logs/clear",HTTP_POST,handleLogsClear);
+  server.on("/mqtt/config",HTTP_GET,handleMqttConfigGet);server.on("/mqtt/save",HTTP_POST,handleMqttSave);
+  server.on("/mqtt/test",HTTP_POST,handleMqttTest);server.on("/scan",HTTP_GET,handleScanStart);
+  server.on("/scan-results",HTTP_GET,handleScanResults);server.on("/on",HTTP_GET,handleOn);
+  server.on("/off",HTTP_GET,handleOff);server.on("/brightness",HTTP_GET,handleBrightness);
+  server.on("/speed",HTTP_GET,handleSpeed);server.on("/effect",HTTP_GET,handleEffect);
+  server.on("/wifi",HTTP_POST,handleWiFiSave);server.on("/reset",HTTP_GET,handleReset);
+  server.on("/wifi-reset",HTTP_POST,handleWiFiReset);
+  server.onNotFound([](){server.sendHeader("Location","/");server.send(302,"text/plain","");});
+  webRoutesRegistered=true;serviceWebServerStartup();
+}
+static void serviceWebCommandQueue(){
+  if(!webCommandQueue)return;
+  for(uint8_t n=0;n<2;++n){HubWebCommand c;if(xQueueReceive(webCommandQueue,&c,0)!=pdPASS)break;
+    switch(c.type){
+      case HUB_WEB_CMD_POWER:setPower(c.value!=0);break;
+      case HUB_WEB_CMD_BRIGHTNESS:setBrightness((uint8_t)c.value);break;
+      case HUB_WEB_CMD_SPEED:setEffectSpeed(c.value);break;
+      case HUB_WEB_CMD_EFFECT:setEffect((uint8_t)c.value);break;
+      case HUB_WEB_CMD_SCAN_START:
+        if(portalMode&&WiFi.getMode()==WIFI_AP)WiFi.mode(WIFI_AP_STA);
+        WiFi.scanDelete();if(WiFi.scanNetworks(true,true)==WIFI_SCAN_FAILED)LOG_ERR("Wi-Fi scan could not be started");break;
+      case HUB_WEB_CMD_CONFIG:{
+        hubMarkActivity();bool rotate=false,displayChanged=false,brightnessChanged=false;uint8_t orientation=0,brightness=0;
+        portENTER_CRITICAL(&hubDataMux);
+        if((c.configMask&HUB_WEB_CFG_LAYOUT)&&c.layout<HUB_LAYOUT_COUNT&&hubLayoutId!=c.layout){hubLayoutId=c.layout;hubForceFullRedraw=true;hubDisplayDirty=true;}
+        if(c.configMask&HUB_WEB_CFG_SAVER){if(c.saver<HUB_SAVER_COUNT)hubSaverId=c.saver;hubSaverActive=false;hubForceFullRedraw=true;hubDisplayDirty=true;}
+        if(c.configMask&HUB_WEB_CFG_IDLE)hubSaverIdleSeconds=c.saverIdle==0?0:(uint16_t)constrain(c.saverIdle,10,3600);
+        if((c.configMask&HUB_WEB_CFG_ORIENTATION)&&c.orientation<=3&&hubOrientation!=c.orientation){hubOrientation=c.orientation;orientation=hubOrientation;rotate=true;}
+        if(c.configMask&HUB_WEB_CFG_DISPLAY){bool v=c.display!=0;if(v!=hubDisplayEnabled)hubDisplayDirty=true;displayChanged=(v!=hubDisplayEnabled)||(v!=displayMatterOn);hubDisplayEnabled=v;displayMatterOn=v;if(!v)hubSaverActive=false;}
+        if(c.configMask&HUB_WEB_CFG_TEST_FPS){hubTestFpsTarget=(uint8_t)constrain(c.testFps,1,60);hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;}
+        if(c.configMask&HUB_WEB_CFG_BRIGHTNESS){brightness=(uint8_t)constrain(c.brightness,1,100);brightnessChanged=displayBrightnessPercent!=brightness;displayBrightnessPercent=brightness;}
+        portEXIT_CRITICAL(&hubDataMux);
+        if(rotate){hubRenderTarget=&hubDisplay;hubDisplay.setRotation(orientation);hubDisplay.fillScreen(0x0000);hubDisplayDirty=true;LOG_B("TFT rotation changed: %u, dimensions=%dx%d",orientation,hubDisplay.width(),hubDisplay.height());}
+        if(displayChanged&&matterStarted)DisplayDimmer.setOnOff(displayMatterOn);
+        if(brightnessChanged&&matterStarted)DisplayDimmer.setBrightness(percentToMatter(brightness));
+        if(displayChanged||brightnessChanged)writeDisplayBacklight();
+        if(statePrefs.begin("hubcfg",false)){statePrefs.putUChar("layout",hubLayoutId);statePrefs.putUChar("saver",hubSaverId);statePrefs.putUShort("idleSec",hubSaverIdleSeconds);statePrefs.putUChar("orient",hubOrientation);statePrefs.putBool("display",hubDisplayEnabled);statePrefs.putBool("dispOn",displayMatterOn);statePrefs.putUChar("dispBri",displayBrightnessPercent);statePrefs.putUChar("testFps",hubTestFpsTarget);statePrefs.end();}
+        break;
+      }
+      case HUB_WEB_CMD_SAVER_START:{
+        bool enabled;uint8_t saver;portENTER_CRITICAL(&hubDataMux);enabled=hubDisplayEnabled;saver=hubSaverId;
+        if(enabled&&saver){hubSaverActive=true;hubDisplayDirty=false;hubClockDirty=hubSensorDirty=hubWeatherDirty=hubLightDirty=false;}
+        portEXIT_CRITICAL(&hubDataMux);
+        if(enabled&&saver){hubLastActivityAt=millis();initHubScreenSaver();drawHubScreenSaverFrame();hubSaverLastFrameAt=millis();lastTftDrawAt=hubSaverLastFrameAt;recordTftFrame();}
+        break;
+      }
+      case HUB_WEB_CMD_WEATHER_SOURCE:{
+        weatherSourceMode=(uint8_t)c.value;Preferences prefs;if(prefs.begin("hubcfg",false)){prefs.putUChar("wxsrc",(uint8_t)c.value);prefs.end();}
+        if(weatherTaskHandle)xTaskNotifyGive(weatherTaskHandle);break;
+      }
+      case HUB_WEB_CMD_WIFI_SAVE:
+        netPrefs.begin("netcfg",false);netPrefs.putString("ssid",c.ssid);netPrefs.putString("password",c.password);netPrefs.end();
+        restartPending=true;pendingFactoryReset=false;restartAt=millis()+900;break;
+      case HUB_WEB_CMD_WIFI_RESET:
+        netPrefs.begin("netcfg",false);netPrefs.clear();netPrefs.end();restartPending=true;pendingFactoryReset=false;restartAt=millis()+400;
+        LOG_R("Wi-Fi credentials cleared; Matter fabric preserved");break;
+      case HUB_WEB_CMD_FACTORY_RESET:restartPending=true;pendingFactoryReset=true;restartAt=millis()+300;break;
+      default:LOG_ERR("Unknown web command type=%u",c.type);break;
+    }
+  }
 }
 
 // Wait only when the synchronous Arduino mode call reports success but the
@@ -3658,7 +3730,7 @@ void startMatter() {
   if (!sensorValid) {
     const float h = hubDHT.readHumidity();
     const float t = hubDHT.readTemperature();
-    if (!isnan(h) && !isnan(t)) { indoorHumidity = h; indoorTempC = t; sensorValid = true; }
+    if(!isnan(h)&&!isnan(t)){portENTER_CRITICAL(&hubDataMux);indoorHumidity=h;indoorTempC=t;sensorValid=true;portEXIT_CRITICAL(&hubDataMux);}
   }
   climateEndpointReady = createClimateMatterEndpoint(
     sensorValid ? indoorTempC : NAN,
@@ -3670,8 +3742,11 @@ void startMatter() {
   LOG_M("STA IPv6 link-local: %s", WiFi.linkLocalIPv6().toString().c_str());
 #endif
   Matter.begin();
-  pairingCode = Matter.getManualPairingCode();
-  pairingQR = matterPayloadFromUrl(Matter.getOnboardingQRCodeUrl());
+  String pairingCodeNew=Matter.getManualPairingCode();
+  String pairingQRNew=matterPayloadFromUrl(Matter.getOnboardingQRCodeUrl());
+  if(webTextMutex)xSemaphoreTake(webTextMutex,portMAX_DELAY);
+  pairingCode=pairingCodeNew;pairingQR=pairingQRNew;
+  if(webTextMutex)xSemaphoreGive(webTextMutex);
   matterStarted = !pairingCode.isEmpty();
   if (!matterStarted) {
     LOG_ERR("Matter stack did not start (pairing code unavailable); Hub continues without Matter");
@@ -3774,8 +3849,9 @@ void updateHubClock() {
     char t[8], d[16];
     strftime(t, sizeof(t), "%H:%M", &ti);
     strftime(d, sizeof(d), "%d.%m.%Y", &ti);
-    timeText = t;
-    dateText = d;
+    if(webTextMutex)xSemaphoreTake(webTextMutex,portMAX_DELAY);
+    timeText=t;dateText=d;
+    if(webTextMutex)xSemaphoreGive(webTextMutex);
   }
 }
 
@@ -5859,13 +5935,13 @@ void updateSmartHub() {
     const float h = hubDHT.readHumidity();
     const float t = hubDHT.readTemperature();
     if (!isnan(h) && !isnan(t)) {
-      const bool firstSample = !sensorValid;
-      // DHT22 reports tenths. Compare rounded tenths to avoid float noise while
-      // still refreshing the visible value on every real 0.1-unit change.
-      const bool visibleChange = firstSample || isnan(indoorTempC) || isnan(indoorHumidity) ||
-        changedAtTenth(t, indoorTempC) || changedAtTenth(h, indoorHumidity);
-      indoorHumidity = h; indoorTempC = t; sensorValid = true;
-      hubAIObserveClimate(t, h);
+      portENTER_CRITICAL(&hubDataMux);
+      const bool firstSample=!sensorValid;
+      // Compare rounded tenths to avoid float noise while retaining real changes.
+      const bool visibleChange=firstSample||isnan(indoorTempC)||isnan(indoorHumidity)||changedAtTenth(t,indoorTempC)||changedAtTenth(h,indoorHumidity);
+      indoorHumidity=h;indoorTempC=t;sensorValid=true;
+      portEXIT_CRITICAL(&hubDataMux);
+      hubAIObserveClimate(t,h);
       if (visibleChange) {
         hubSensorDirty = true;
         publishMqttState(); // Push updated climate readings to retained MQTT sensors.
@@ -6364,43 +6440,27 @@ static void hubAISaveMemory(bool force = false) {
   hubAILastPersistAt = now;
 }
 
-static void hubAIObserveClimate(float temperature, float humidity) {
-  if (!isfinite(temperature) || !isfinite(humidity) ||
-      temperature < -40.0f || temperature > 80.0f || humidity < 0.0f || humidity > 100.0f) {
-    hubAIAnomalyMask |= 0x01;
-    ++hubAIAnomalyCount;
-    LOG_W("LOCAL AI sensor anomaly: implausible sample T=%.1f RH=%.1f", temperature, humidity);
-    return;
+static void hubAIObserveClimate(float temperature,float humidity){
+  if(!isfinite(temperature)||!isfinite(humidity)||temperature < -40.0f||temperature>80.0f||humidity<0.0f||humidity>100.0f){
+    portENTER_CRITICAL(&hubDataMux);hubAIAnomalyMask|=0x01;++hubAIAnomalyCount;portEXIT_CRITICAL(&hubDataMux);
+    LOG_W("LOCAL AI sensor anomaly: implausible sample T=%.1f RH=%.1f",temperature,humidity);return;
   }
-  if (isnan(hubAITempMean) || isnan(hubAIHumidityMean) || hubAISensorSamples < 4) {
-    if (isnan(hubAITempMean)) hubAITempMean = temperature;
-    if (isnan(hubAIHumidityMean)) hubAIHumidityMean = humidity;
-    hubAITempMean += 0.25f * (temperature - hubAITempMean);
-    hubAIHumidityMean += 0.25f * (humidity - hubAIHumidityMean);
-    ++hubAISensorSamples;
-    return;
+  bool anomaly=false;uint8_t flags=0;float dt=0,dh=0;portENTER_CRITICAL(&hubDataMux);
+  if(isnan(hubAITempMean)||isnan(hubAIHumidityMean)||hubAISensorSamples<4){
+    if(isnan(hubAITempMean))hubAITempMean=temperature;if(isnan(hubAIHumidityMean))hubAIHumidityMean=humidity;
+    hubAITempMean+=0.25f*(temperature-hubAITempMean);hubAIHumidityMean+=0.25f*(humidity-hubAIHumidityMean);
+    ++hubAISensorSamples;portEXIT_CRITICAL(&hubDataMux);return;
   }
-  const float dt = temperature - hubAITempMean;
-  const float dh = humidity - hubAIHumidityMean;
-  const float tempLimit = max(4.0f, 4.5f * sqrtf(max(0.05f, hubAITempVariance)));
-  const float humLimit = max(18.0f, 4.5f * sqrtf(max(1.0f, hubAIHumidityVariance)));
-  uint8_t flags = 0;
-  if (fabsf(dt) > tempLimit) flags |= 0x02;
-  if (fabsf(dh) > humLimit) flags |= 0x04;
-  hubAIAnomalyMask = flags;
-  if (flags) {
-    ++hubAIAnomalyCount;
-    LOG_W("LOCAL AI climate anomaly flags=0x%02X deltaT=%.1f deltaRH=%.1f", flags, dt, dh);
-  } else {
-    hubAITempMean += 0.08f * dt;
-    hubAIHumidityMean += 0.08f * dh;
-    hubAITempVariance = 0.92f * hubAITempVariance + 0.08f * dt * (temperature - hubAITempMean);
-    hubAIHumidityVariance = 0.92f * hubAIHumidityVariance + 0.08f * dh * (humidity - hubAIHumidityMean);
-    if (hubAITempVariance < 0.05f) hubAITempVariance = 0.05f;
-    if (hubAIHumidityVariance < 1.0f) hubAIHumidityVariance = 1.0f;
+  dt=temperature-hubAITempMean;dh=humidity-hubAIHumidityMean;
+  const float tl=max(4.0f,4.5f*sqrtf(max(0.05f,hubAITempVariance))),hl=max(18.0f,4.5f*sqrtf(max(1.0f,hubAIHumidityVariance)));
+  if(fabsf(dt)>tl)flags|=0x02;if(fabsf(dh)>hl)flags|=0x04;hubAIAnomalyMask=flags;
+  if(flags){++hubAIAnomalyCount;anomaly=true;}else{
+    hubAITempMean+=0.08f*dt;hubAIHumidityMean+=0.08f*dh;hubAITempVariance=0.92f*hubAITempVariance+0.08f*dt*(temperature-hubAITempMean);
+    hubAIHumidityVariance=0.92f*hubAIHumidityVariance+0.08f*dh*(humidity-hubAIHumidityMean);
+    if(hubAITempVariance<0.05f)hubAITempVariance=0.05f;if(hubAIHumidityVariance<1.0f)hubAIHumidityVariance=1.0f;
   }
-  if (hubAISensorSamples < 65535) ++hubAISensorSamples;
-  hubAISaveMemory(false);
+  if(hubAISensorSamples<65535)++hubAISensorSamples;portEXIT_CRITICAL(&hubDataMux);
+  if(anomaly)LOG_W("LOCAL AI climate anomaly flags=0x%02X deltaT=%.1f deltaRH=%.1f",flags,dt,dh);hubAISaveMemory(false);
 }
 
 static bool hubAIProviderCoolingDown(uint8_t id, uint32_t now) {
@@ -6431,21 +6491,13 @@ static uint8_t hubAIChooseWeatherProvider(uint8_t attemptedMask) {
   return best;
 }
 
-static void hubAIRecordWeather(uint8_t id, bool success, uint32_t latencyMs) {
-  if (id >= 3) return;
-  HubAIProviderMemory &m = hubAIProvider[id];
-  if (success) {
-    if (m.success < 65000) ++m.success;
-    m.failureStreak = 0; m.lastSuccessAt = millis(); m.lastErrorClass = HUB_AI_ERR_NONE;
-  } else {
-    if (m.failure < 65000) ++m.failure;
-    if (m.failureStreak < 10) ++m.failureStreak;
-    m.lastErrorClass = hubAILastWeatherError;
-  }
-  m.avgLatencyMs = m.avgLatencyMs ? (m.avgLatencyMs * 7UL + latencyMs) / 8UL : latencyMs;
-  ++hubAIEvents;
-  LOG_B("LOCAL AI weather learning: provider=%u result=%s errorClass=%u latency=%lu ms ok=%u fail=%u",
-        id, success ? "SUCCESS" : "FAIL", m.lastErrorClass, (unsigned long)latencyMs, m.success, m.failure);
+static void hubAIRecordWeather(uint8_t id,bool success,uint32_t latencyMs){
+  if(id>=3)return;uint8_t errorClass;uint16_t okCount,failCount;portENTER_CRITICAL(&hubDataMux);HubAIProviderMemory &m=hubAIProvider[id];
+  if(success){if(m.success<65000)++m.success;m.failureStreak=0;m.lastSuccessAt=millis();m.lastErrorClass=HUB_AI_ERR_NONE;}
+  else{if(m.failure<65000)++m.failure;if(m.failureStreak<10)++m.failureStreak;m.lastErrorClass=hubAILastWeatherError;}
+  m.avgLatencyMs=m.avgLatencyMs?(m.avgLatencyMs*7UL+latencyMs)/8UL:latencyMs;++hubAIEvents;
+  errorClass=m.lastErrorClass;okCount=m.success;failCount=m.failure;portEXIT_CRITICAL(&hubDataMux);
+  LOG_B("LOCAL AI weather learning: provider=%u result=%s errorClass=%u latency=%lu ms ok=%u fail=%u",id,success?"SUCCESS":"FAIL",errorClass,(unsigned long)latencyMs,okCount,failCount);
   hubAISaveMemory(success);
 }
 
@@ -6548,88 +6600,38 @@ static void serviceWeatherTaskStartup() {
         (unsigned long)ESP.getFreeHeap(), (unsigned long)ESP.getMaxAllocHeap());
 }
 
-void handleHubSaverStart() {
-  if (!hubDisplayEnabled) { server.send(409, "application/json; charset=utf-8", "{\"ok\":false,\"message\":\"Дисплей выключен\"}"); return; }
-  if (hubSaverId == 0) { server.send(409, "application/json; charset=utf-8", "{\"ok\":false,\"message\":\"Сначала выберите заставку\"}"); return; }
-  hubLastActivityAt = millis(); hubSaverActive = true; hubDisplayDirty = false;
-  hubClockDirty = hubSensorDirty = hubWeatherDirty = hubLightDirty = false;
-  initHubScreenSaver(); drawHubScreenSaverFrame();
-  hubSaverLastFrameAt = millis(); lastTftDrawAt = hubSaverLastFrameAt; recordTftFrame();
-  server.send(200, "application/json; charset=utf-8", "{\"ok\":true}");
+void handleHubSaverStart(){
+  bool enabled;uint8_t saver;portENTER_CRITICAL(&hubDataMux);enabled=hubDisplayEnabled;saver=hubSaverId;portEXIT_CRITICAL(&hubDataMux);
+  if(!enabled){server.send(409,"application/json; charset=utf-8","{\"ok\":false,\"message\":\"Дисплей выключен\"}");return;}
+  if(!saver){server.send(409,"application/json; charset=utf-8","{\"ok\":false,\"message\":\"Сначала выберите заставку\"}");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_SAVER_START;bool q=queueHubWebCommand(c);
+  server.send(q?202:503,"application/json; charset=utf-8",q?"{\"ok\":true,\"queued\":true}":"{\"ok\":false,\"message\":\"Очередь команд занята\"}");
 }
 
-void handleHubConfig() {
-  if (server.method() == HTTP_POST) {
-    hubMarkActivity();
-    if (server.hasArg("layout")) {
-      int v = server.arg("layout").toInt();
-      if (v >= 0 && v < HUB_LAYOUT_COUNT && hubLayoutId != (uint8_t)v) { hubLayoutId = (uint8_t)v; hubForceFullRedraw = true; hubDisplayDirty = true; }
-    }
-    if (server.hasArg("saver")) {
-      int v = server.arg("saver").toInt();
-      if (v >= 0 && v < HUB_SAVER_COUNT) hubSaverId = (uint8_t)v;
-      hubSaverActive = false;
-      hubForceFullRedraw = true;
-      hubDisplayDirty = true;
-    }
-    if (server.hasArg("saverIdle")) {
-      int v = server.arg("saverIdle").toInt();
-      if (v == 0) hubSaverIdleSeconds = 0;
-      else hubSaverIdleSeconds = (uint16_t)constrain(v, 10, 3600);
-    }
-    if (server.hasArg("orientation")) {
-      int v = server.arg("orientation").toInt();
-      if (v >= 0 && v <= 3 && hubOrientation != (uint8_t)v) {
-        hubOrientation = (uint8_t)v;
-        hubRenderTarget = &hubDisplay;
-      hubDisplay.setRotation(hubOrientation);
-        hubDisplay.fillScreen(0x0000);
-        hubDisplayDirty = true;
-        LOG_B("TFT rotation changed: %u, dimensions=%dx%d", hubOrientation, hubDisplay.width(), hubDisplay.height());
-      }
-    }
-    if (server.hasArg("display")) {
-      const bool requested = server.arg("display") != "0";
-      if (requested != hubDisplayEnabled) hubDisplayDirty = true;
-      hubDisplayEnabled = requested;
-      displayMatterOn = hubDisplayEnabled;
-      if (!hubDisplayEnabled) hubSaverActive = false;
-      if (matterStarted) DisplayDimmer.setOnOff(displayMatterOn);
-      writeDisplayBacklight();
-    }
-    if (server.hasArg("testFps")) {
-      hubTestFpsTarget=(uint8_t)constrain(server.arg("testFps").toInt(),1,60);
-      hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;
-    }
-    if (server.hasArg("brightness")) {
-      int v = constrain(server.arg("brightness").toInt(), 1, 100);
-      displayBrightnessPercent = (uint8_t)v;
-      if (matterStarted) DisplayDimmer.setBrightness(percentToMatter(displayBrightnessPercent));
-      writeDisplayBacklight();
-    }
-    if (statePrefs.begin("hubcfg", false)) {
-      statePrefs.putUChar("layout", hubLayoutId); statePrefs.putUChar("saver", hubSaverId); statePrefs.putUShort("idleSec", hubSaverIdleSeconds);
-      statePrefs.putUChar("orient", hubOrientation); statePrefs.putBool("display", hubDisplayEnabled);
-      statePrefs.putBool("dispOn", displayMatterOn); statePrefs.putUChar("dispBri", displayBrightnessPercent);
-      statePrefs.end();
-    }
+void handleHubConfig(){
+  if(server.method()==HTTP_POST){
+    HubWebCommand c={};c.type=HUB_WEB_CMD_CONFIG;
+    if(server.hasArg("layout")){int v=server.arg("layout").toInt();c.configMask|=HUB_WEB_CFG_LAYOUT;c.layout=(v>=0&&v<HUB_LAYOUT_COUNT)?v:255;}
+    if(server.hasArg("saver")){int v=server.arg("saver").toInt();c.configMask|=HUB_WEB_CFG_SAVER;c.saver=(v>=0&&v<HUB_SAVER_COUNT)?v:255;}
+    if(server.hasArg("saverIdle")){int v=server.arg("saverIdle").toInt();c.configMask|=HUB_WEB_CFG_IDLE;c.saverIdle=(uint16_t)(v==0?0:constrain(v,10,3600));}
+    if(server.hasArg("orientation")){int v=server.arg("orientation").toInt();c.configMask|=HUB_WEB_CFG_ORIENTATION;c.orientation=(v>=0&&v<=3)?v:255;}
+    if(server.hasArg("display")){c.configMask|=HUB_WEB_CFG_DISPLAY;c.display=server.arg("display")!="0";}
+    if(server.hasArg("testFps")){c.configMask|=HUB_WEB_CFG_TEST_FPS;c.testFps=(uint8_t)constrain(server.arg("testFps").toInt(),1,60);}
+    if(server.hasArg("brightness")){c.configMask|=HUB_WEB_CFG_BRIGHTNESS;c.brightness=(uint8_t)constrain(server.arg("brightness").toInt(),1,100);}
+    if(!queueHubWebCommand(c)){server.send(503,"application/json; charset=utf-8","{\"ok\":false,\"message\":\"Очередь команд занята\"}");return;}
+    server.send(202,"application/json; charset=utf-8","{\"ok\":true,\"queued\":true}");return;
   }
-  String json = "{\"layout\":" + String(hubLayoutId) + ",\"layoutName\":\"" + jsonEscape(String(HUB_LAYOUT_NAMES[hubLayoutId])) +
-    "\",\"saver\":" + String(hubSaverId) + ",\"orientation\":" + String(hubOrientation) +
-    ",\"display\":" + String(hubDisplayEnabled ? "true" : "false") +
-    ",\"brightness\":" + String(displayBrightnessPercent) + ",\"testFps\":" + String(hubTestFpsTarget) + ",\"saverIdle\":" + String(hubSaverIdleSeconds);
-  json += ",\"layouts\":[";
-  for (uint8_t i = 0; i < HUB_LAYOUT_COUNT; ++i) {
-    if (i) json += ',';
-    json += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEscape(String(HUB_LAYOUT_NAMES[i])) + "\"}";
-  }
-  json += "],\"savers\":[";
-  for (uint8_t i = 0; i < HUB_SAVER_COUNT; ++i) {
-    if (i) json += ',';
-    json += "{\"id\":" + String(i) + ",\"name\":\"" + jsonEscape(String(HUB_SAVER_NAMES[i])) + "\"}";
-  }
-  json += "]}";
-  server.send(200, "application/json; charset=utf-8", json);
+  uint8_t layout,saver,orientation,display,brightness,testFps;uint16_t idle;
+  portENTER_CRITICAL(&hubDataMux);layout=hubLayoutId;saver=hubSaverId;orientation=hubOrientation;display=hubDisplayEnabled?1:0;
+  brightness=displayBrightnessPercent;testFps=hubTestFpsTarget;idle=hubSaverIdleSeconds;portEXIT_CRITICAL(&hubDataMux);
+  String json="{\"layout\":"+String(layout)+",\"layoutName\":\""+jsonEscape(String(HUB_LAYOUT_NAMES[layout]))+
+    "\",\"saver\":"+String(saver)+",\"orientation\":"+String(orientation)+",\"display\":"+String(display?"true":"false")+
+    ",\"brightness\":"+String(brightness)+",\"testFps\":"+String(testFps)+",\"saverIdle\":"+String(idle);
+  json+=",\"layouts\":[";
+  for(uint8_t i=0;i<HUB_LAYOUT_COUNT;++i){if(i)json+=',';json+="{\"id\":"+String(i)+",\"name\":\""+jsonEscape(String(HUB_LAYOUT_NAMES[i]))+"\"}";}
+  json+="],\"savers\":[";
+  for(uint8_t i=0;i<HUB_SAVER_COUNT;++i){if(i)json+=',';json+="{\"id\":"+String(i)+",\"name\":\""+jsonEscape(String(HUB_SAVER_NAMES[i]))+"\"}";}
+  json+="]}";server.send(200,"application/json; charset=utf-8",json);
 }
 void handleWeatherRefresh() {
   if (!weatherTaskHandle) { server.send(503, "application/json", "{\"ok\":false,\"message\":\"Задача погоды не запущена\"}"); return; }
@@ -6637,47 +6639,47 @@ void handleWeatherRefresh() {
   server.send(202, "application/json; charset=utf-8", "{\"ok\":true,\"message\":\"Запрос поставлен в очередь\"}");
 }
 
-void handleWeatherSource() {
-  if (!server.hasArg("source")) { server.send(400, "application/json", "{\"ok\":false,\"message\":\"Не указан источник\"}"); return; }
-  const int mode=server.arg("source").toInt();
-  if (mode<0 || mode>3) { server.send(400, "application/json", "{\"ok\":false,\"message\":\"Недопустимый источник\"}"); return; }
-  weatherSourceMode=(uint8_t)mode;
-  Preferences prefs;
-  if (prefs.begin("hubcfg",false)) { prefs.putUChar("wxsrc",(uint8_t)mode); prefs.end(); }
-  if (weatherTaskHandle) xTaskNotifyGive(weatherTaskHandle);
+void handleWeatherSource(){
+  if(!server.hasArg("source")){server.send(400,"application/json","{\"ok\":false,\"message\":\"Не указан источник\"}");return;}
+  int mode=server.arg("source").toInt();if(mode<0||mode>3){server.send(400,"application/json","{\"ok\":false,\"message\":\"Недопустимый источник\"}");return;}
+  HubWebCommand c={};c.type=HUB_WEB_CMD_WEATHER_SOURCE;c.value=mode;
+  if(!queueHubWebCommand(c)){server.send(503,"application/json","{\"ok\":false,\"message\":\"Очередь команд занята\"}");return;}
   static const char *names[]={"Авто","Open-Meteo","wttr.in","MET Norway"};
-  String json="{\"ok\":true,\"message\":\"Источник: "+String(names[mode])+" · обновление…\"}";
-  server.send(200,"application/json; charset=utf-8",json);
+  String json="{\"ok\":true,\"queued\":true,\"message\":\"Источник: "+String(names[mode])+" · обновление…\"}";
+  server.send(202,"application/json; charset=utf-8",json);
 }
 
-void handleHubData() {
-  String json = "{";
-  json += "\"indoorTemp\":"; if (sensorValid) json += String(indoorTempC, 1); else json += "null"; json += ",";
-  json += "\"indoorHumidity\":"; if (sensorValid) json += String(indoorHumidity, 1); else json += "null"; json += ",";
-  json += "\"outdoorTemp\":"; if (weatherValid) json += String(outdoorTempC, 1); else json += "null"; json += ",";
-  json += "\"outdoorHumidity\":"; if (weatherValid && !isnan(outdoorHumidity)) json += String(outdoorHumidity, 1); else json += "null"; json += ",";
-  json += "\"feelsLike\":"; if (weatherValid && !isnan(outdoorFeelsLikeC)) json += String(outdoorFeelsLikeC, 1); else json += "null"; json += ",";
-  json += "\"pressure\":"; if (weatherValid && !isnan(outdoorPressureHpa)) json += String(outdoorPressureHpa, 1); else json += "null"; json += ",";
-  json += "\"windSpeed\":"; if (weatherValid && !isnan(outdoorWindSpeedKmh)) json += String(outdoorWindSpeedKmh, 1); else json += "null"; json += ",";
-  json += "\"windDirection\":"; if (weatherValid && !isnan(outdoorWindDirection)) json += String(outdoorWindDirection, 0); else json += "null"; json += ",";
-  json += "\"cloudCover\":"; if (weatherValid && !isnan(outdoorCloudCover)) json += String(outdoorCloudCover, 0); else json += "null"; json += ",";
-  json += "\"uvIndex\":"; if (weatherValid && !isnan(outdoorUvIndex)) json += String(outdoorUvIndex, 1); else json += "null"; json += ",";
-  char weatherSourceCopy[24], weatherStatusCopy[64];
-  copyWeatherText(weatherStatusCopy, sizeof(weatherStatusCopy), weatherSourceCopy, sizeof(weatherSourceCopy));
-  json += "\"weatherSource\":\"" + jsonEscape(String(weatherSourceCopy)) + "\",";
-  json += "\"precipProbability\":"; if (weatherValid && outdoorPrecipProbability >= 0) json += String(outdoorPrecipProbability); else json += "null"; json += ",";
-  json += "\"precipitationMm\":"; if (weatherValid) json += String(outdoorPrecipMm, 1); else json += "null"; json += ",";
-  json += "\"weatherMode\":" + String((uint8_t)weatherSourceMode) + ",";
-  json += "\"ai\":{\"mode\":\"ESP32-LOCAL-ADAPTIVE\",\"events\":" + String(hubAIEvents) +
-    ",\"anomalies\":" + String(hubAIAnomalyCount) + ",\"anomalyMask\":" + String(hubAIAnomalyMask) +
-    ",\"sensorSamples\":" + String(hubAISensorSamples) + ",\"providers\":[";
-  for (uint8_t i = 0; i < 3; ++i) {
-    if (i) json += ',';
-    json += "{\"id\":" + String(i) + ",\"ok\":" + String(hubAIProvider[i].success) +
-      ",\"fail\":" + String(hubAIProvider[i].failure) + ",\"avgLatencyMs\":" + String(hubAIProvider[i].avgLatencyMs) + ",\"lastErrorClass\":" + String(hubAIProvider[i].lastErrorClass) + "}";
-  }
-  json += "]},\"time\":\"" + timeText + "\",\"date\":\"" + dateText + "\",\"weatherStatus\":\"" + jsonEscape(String(weatherStatusCopy)) + "\"}";
-  server.send(200, "application/json; charset=utf-8", json);
+void handleHubData(){
+  bool sensorOk,weatherOk;float inT,inH,outT,outH,feels,pressure,wind,windDir,cloud,uv,precip;int rain;
+  uint8_t mode,mask;uint32_t events,anomalies;uint16_t samples;HubAIProviderMemory providers[3];
+  portENTER_CRITICAL(&hubDataMux);
+  sensorOk=sensorValid;weatherOk=weatherValid;inT=indoorTempC;inH=indoorHumidity;outT=outdoorTempC;outH=outdoorHumidity;
+  feels=outdoorFeelsLikeC;pressure=outdoorPressureHpa;wind=outdoorWindSpeedKmh;windDir=outdoorWindDirection;cloud=outdoorCloudCover;
+  uv=outdoorUvIndex;precip=outdoorPrecipMm;rain=outdoorPrecipProbability;mode=weatherSourceMode;
+  events=hubAIEvents;anomalies=hubAIAnomalyCount;mask=hubAIAnomalyMask;samples=hubAISensorSamples;
+  for(uint8_t i=0;i<3;++i)providers[i]=hubAIProvider[i];portEXIT_CRITICAL(&hubDataMux);
+  char source[24],status[64];copyWeatherText(status,sizeof(status),source,sizeof(source));
+  String timeCopy,dateCopy;if(webTextMutex)xSemaphoreTake(webTextMutex,portMAX_DELAY);timeCopy=timeText;dateCopy=dateText;if(webTextMutex)xSemaphoreGive(webTextMutex);
+  String json="{";
+  json+="\"indoorTemp\":";if(sensorOk)json+=String(inT,1);else json+="null";json+=",";
+  json+="\"indoorHumidity\":";if(sensorOk)json+=String(inH,1);else json+="null";json+=",";
+  json+="\"outdoorTemp\":";if(weatherOk)json+=String(outT,1);else json+="null";json+=",";
+  json+="\"outdoorHumidity\":";if(weatherOk&&!isnan(outH))json+=String(outH,1);else json+="null";json+=",";
+  json+="\"feelsLike\":";if(weatherOk&&!isnan(feels))json+=String(feels,1);else json+="null";json+=",";
+  json+="\"pressure\":";if(weatherOk&&!isnan(pressure))json+=String(pressure,1);else json+="null";json+=",";
+  json+="\"windSpeed\":";if(weatherOk&&!isnan(wind))json+=String(wind,1);else json+="null";json+=",";
+  json+="\"windDirection\":";if(weatherOk&&!isnan(windDir))json+=String(windDir,0);else json+="null";json+=",";
+  json+="\"cloudCover\":";if(weatherOk&&!isnan(cloud))json+=String(cloud,0);else json+="null";json+=",";
+  json+="\"uvIndex\":";if(weatherOk&&!isnan(uv))json+=String(uv,1);else json+="null";json+=",";
+  json+="\"weatherSource\":\""+jsonEscape(String(source))+"\",";
+  json+="\"precipProbability\":";if(weatherOk&&rain>=0)json+=String(rain);else json+="null";json+=",";
+  json+="\"precipitationMm\":";if(weatherOk)json+=String(precip,1);else json+="null";json+=",";
+  json+="\"weatherMode\":"+String(mode)+",\"ai\":{\"mode\":\"ESP32-LOCAL-ADAPTIVE\",\"events\":"+String(events)+
+    ",\"anomalies\":"+String(anomalies)+",\"anomalyMask\":"+String(mask)+",\"sensorSamples\":"+String(samples)+",\"providers\":[";
+  for(uint8_t i=0;i<3;++i){if(i)json+=',';json+="{\"id\":"+String(i)+",\"ok\":"+String(providers[i].success)+",\"fail\":"+String(providers[i].failure)+
+    ",\"avgLatencyMs\":"+String(providers[i].avgLatencyMs)+",\"lastErrorClass\":"+String(providers[i].lastErrorClass)+"}";}
+  json+="]},\"time\":\""+timeCopy+"\",\"date\":\""+dateCopy+"\",\"weatherStatus\":\""+jsonEscape(String(status))+"\"}";
+  server.send(200,"application/json; charset=utf-8",json);
 }
 
 // ============================================================
@@ -6729,6 +6731,10 @@ void setup() {
         hubRenderTarget == &hubDisplay ? "direct-fallback" : "atomic-scene");
   hubDisplayDirty = true;
   loadMqttConfig(); // Also load settings in setup-AP mode, before Wi-Fi is configured.
+  webCommandQueue=xQueueCreate(8,sizeof(HubWebCommand));
+  if(!webCommandQueue)LOG_ERR("Cannot allocate HTTP command queue; mutating routes will return 503");
+  webTextMutex=xSemaphoreCreateMutex();
+  if(!webTextMutex)LOG_ERR("Cannot allocate web text mutex");
 
   pinMode(LED_PIN, OUTPUT);
   pwmReady = ledcAttach(LED_PIN, PWM_FREQUENCY, PWM_RESOLUTION);
@@ -6747,14 +6753,12 @@ void setup() {
     // initialize Wi-Fi/AP first, then open the HTTP server.
     startPortal();
     setupWebServer();
-    hubLogResourceSnapshot("http-started");
     startWeatherTask();
     return;
   }
 
   // STA association is asynchronous, but HTTP starts immediately afterward.
   setupWebServer();
-  hubLogResourceSnapshot("http-started");
   // The connection and Matter/MQTT startup continue from loop() without
   // blocking the display, HTTP server, button handling or diagnostics.
 }
@@ -6777,20 +6781,13 @@ static void hubMeasureLoopStage(const char *stage, uint32_t startedUs) {
 }
 
 void loop() {
-  // Service HTTP both before and after the display update. A complete TFT scene
-  // can take ~41 ms; the second poll prevents a request arriving during rendering
-  // from waiting for the next loop iteration.
-  uint32_t stageStartedUs = micros();
-  server.handleClient();
-  hubMeasureLoopStage("http-pre", stageStartedUs);
-
-  stageStartedUs = micros();
+  // PsychicHttp owns network I/O in its own task. The loop applies bounded
+  // application commands and keeps display/sensor/Matter/MQTT scheduling local.
+  serviceWebServerStartup();
+  serviceWebCommandQueue();
+  uint32_t stageStartedUs=micros();
   updateSmartHub();
-  hubMeasureLoopStage("smart-hub-render/sensor", stageStartedUs);
-
-  stageStartedUs = micros();
-  server.handleClient();
-  hubMeasureLoopStage("http-post", stageStartedUs);
+  hubMeasureLoopStage("smart-hub-render/sensor",stageStartedUs);
   serviceStartupWiFi();
   serviceWeatherTaskStartup();
   static uint32_t lastSerialHeartbeatAt=0;
