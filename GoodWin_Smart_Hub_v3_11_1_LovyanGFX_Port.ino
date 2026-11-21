@@ -754,6 +754,7 @@ struct HubWebCommand{
   uint8_t layout=0,saver=0,orientation=0,display=0,brightness=0,testFps=0;
   char ssid[33]={0},password[65]={0};
 };
+static bool queueHubWebCommand(const HubWebCommand &c);
 static QueueHandle_t webCommandQueue=nullptr;
 static bool webRoutesRegistered=false;
 static SemaphoreHandle_t webTextMutex=nullptr;
@@ -3035,8 +3036,12 @@ void handleLogsClear() {
 }
 
 static void serviceWebServerStartup(){
+  static uint32_t lastStartAttemptAt=0;
   if(!webRoutesRegistered||server.isRunning()||!server.isConnected())return;
-  if(!server.begin()){LOG_ERR("PsychicHttp start failed; retrying when network is ready");return;}
+  const uint32_t now=millis();
+  if(lastStartAttemptAt&&(uint32_t)(now-lastStartAttemptAt)<5000UL)return;
+  lastStartAttemptAt=now;
+  if(!server.begin()){LOG_ERR("PsychicHttp start failed; retrying in 5 seconds");return;}
   LOG_H("PsychicHttp started port=80 stack=%u core=0 priority=2 sockets=4 maxBody=1024 mode=%u STA=%s AP=%s",
     server.stackSize(),(unsigned)WiFi.getMode(),WiFi.localIP().toString().c_str(),WiFi.softAPIP().toString().c_str());
   hubLogResourceSnapshot("http-started");
@@ -3060,57 +3065,7 @@ void setupWebServer(){
   server.onNotFound([](){server.sendHeader("Location","/");server.send(302,"text/plain","");});
   webRoutesRegistered=true;serviceWebServerStartup();
 }
-static void serviceWebCommandQueue(){
-  if(!webCommandQueue)return;
-  for(uint8_t n=0;n<2;++n){HubWebCommand c;if(xQueueReceive(webCommandQueue,&c,0)!=pdPASS)break;
-    switch(c.type){
-      case HUB_WEB_CMD_POWER:setPower(c.value!=0);break;
-      case HUB_WEB_CMD_BRIGHTNESS:setBrightness((uint8_t)c.value);break;
-      case HUB_WEB_CMD_SPEED:setEffectSpeed(c.value);break;
-      case HUB_WEB_CMD_EFFECT:setEffect((uint8_t)c.value);break;
-      case HUB_WEB_CMD_SCAN_START:
-        if(portalMode&&WiFi.getMode()==WIFI_AP)WiFi.mode(WIFI_AP_STA);
-        WiFi.scanDelete();if(WiFi.scanNetworks(true,true)==WIFI_SCAN_FAILED)LOG_ERR("Wi-Fi scan could not be started");break;
-      case HUB_WEB_CMD_CONFIG:{
-        hubMarkActivity();bool rotate=false,displayChanged=false,brightnessChanged=false;uint8_t orientation=0,brightness=0;
-        portENTER_CRITICAL(&hubDataMux);
-        if((c.configMask&HUB_WEB_CFG_LAYOUT)&&c.layout<HUB_LAYOUT_COUNT&&hubLayoutId!=c.layout){hubLayoutId=c.layout;hubForceFullRedraw=true;hubDisplayDirty=true;}
-        if(c.configMask&HUB_WEB_CFG_SAVER){if(c.saver<HUB_SAVER_COUNT)hubSaverId=c.saver;hubSaverActive=false;hubForceFullRedraw=true;hubDisplayDirty=true;}
-        if(c.configMask&HUB_WEB_CFG_IDLE)hubSaverIdleSeconds=c.saverIdle==0?0:(uint16_t)constrain(c.saverIdle,10,3600);
-        if((c.configMask&HUB_WEB_CFG_ORIENTATION)&&c.orientation<=3&&hubOrientation!=c.orientation){hubOrientation=c.orientation;orientation=hubOrientation;rotate=true;}
-        if(c.configMask&HUB_WEB_CFG_DISPLAY){bool v=c.display!=0;if(v!=hubDisplayEnabled)hubDisplayDirty=true;displayChanged=(v!=hubDisplayEnabled)||(v!=displayMatterOn);hubDisplayEnabled=v;displayMatterOn=v;if(!v)hubSaverActive=false;}
-        if(c.configMask&HUB_WEB_CFG_TEST_FPS){hubTestFpsTarget=(uint8_t)constrain(c.testFps,1,60);hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;}
-        if(c.configMask&HUB_WEB_CFG_BRIGHTNESS){brightness=(uint8_t)constrain(c.brightness,1,100);brightnessChanged=displayBrightnessPercent!=brightness;displayBrightnessPercent=brightness;}
-        portEXIT_CRITICAL(&hubDataMux);
-        if(rotate){hubRenderTarget=&hubDisplay;hubDisplay.setRotation(orientation);hubDisplay.fillScreen(0x0000);hubDisplayDirty=true;LOG_B("TFT rotation changed: %u, dimensions=%dx%d",orientation,hubDisplay.width(),hubDisplay.height());}
-        if(displayChanged&&matterStarted)DisplayDimmer.setOnOff(displayMatterOn);
-        if(brightnessChanged&&matterStarted)DisplayDimmer.setBrightness(percentToMatter(brightness));
-        if(displayChanged||brightnessChanged)writeDisplayBacklight();
-        if(statePrefs.begin("hubcfg",false)){statePrefs.putUChar("layout",hubLayoutId);statePrefs.putUChar("saver",hubSaverId);statePrefs.putUShort("idleSec",hubSaverIdleSeconds);statePrefs.putUChar("orient",hubOrientation);statePrefs.putBool("display",hubDisplayEnabled);statePrefs.putBool("dispOn",displayMatterOn);statePrefs.putUChar("dispBri",displayBrightnessPercent);statePrefs.putUChar("testFps",hubTestFpsTarget);statePrefs.end();}
-        break;
-      }
-      case HUB_WEB_CMD_SAVER_START:{
-        bool enabled;uint8_t saver;portENTER_CRITICAL(&hubDataMux);enabled=hubDisplayEnabled;saver=hubSaverId;
-        if(enabled&&saver){hubSaverActive=true;hubDisplayDirty=false;hubClockDirty=hubSensorDirty=hubWeatherDirty=hubLightDirty=false;}
-        portEXIT_CRITICAL(&hubDataMux);
-        if(enabled&&saver){hubLastActivityAt=millis();initHubScreenSaver();drawHubScreenSaverFrame();hubSaverLastFrameAt=millis();lastTftDrawAt=hubSaverLastFrameAt;recordTftFrame();}
-        break;
-      }
-      case HUB_WEB_CMD_WEATHER_SOURCE:{
-        weatherSourceMode=(uint8_t)c.value;Preferences prefs;if(prefs.begin("hubcfg",false)){prefs.putUChar("wxsrc",(uint8_t)c.value);prefs.end();}
-        if(weatherTaskHandle)xTaskNotifyGive(weatherTaskHandle);break;
-      }
-      case HUB_WEB_CMD_WIFI_SAVE:
-        netPrefs.begin("netcfg",false);netPrefs.putString("ssid",c.ssid);netPrefs.putString("password",c.password);netPrefs.end();
-        restartPending=true;pendingFactoryReset=false;restartAt=millis()+900;break;
-      case HUB_WEB_CMD_WIFI_RESET:
-        netPrefs.begin("netcfg",false);netPrefs.clear();netPrefs.end();restartPending=true;pendingFactoryReset=false;restartAt=millis()+400;
-        LOG_R("Wi-Fi credentials cleared; Matter fabric preserved");break;
-      case HUB_WEB_CMD_FACTORY_RESET:restartPending=true;pendingFactoryReset=true;restartAt=millis()+300;break;
-      default:LOG_ERR("Unknown web command type=%u",c.type);break;
-    }
-  }
-}
+
 
 // Wait only when the synchronous Arduino mode call reports success but the
 // observable mode has not caught up yet. Never wait after a failed mode call.
@@ -3296,6 +3251,8 @@ void startConnectedServices() {
   connectedServicesStarted = true;
   startupWifiPending = false;
   WiFi.setAutoReconnect(true);
+  // Reserve HTTP server task/stack before Matter allocates endpoint/session pools.
+  serviceWebServerStartup();
   LOG_W("Connected; SSID=%s IP=%s GW=%s MASK=%s RSSI=%d channel=%d",
     WiFi.SSID().c_str(), WiFi.localIP().toString().c_str(), WiFi.gatewayIP().toString().c_str(),
     WiFi.subnetMask().toString().c_str(), WiFi.RSSI(), WiFi.channel());
@@ -6682,6 +6639,58 @@ void handleHubData(){
   server.send(200,"application/json; charset=utf-8",json);
 }
 
+static void serviceWebCommandQueue(){
+  if(!webCommandQueue)return;
+  for(uint8_t n=0;n<2;++n){HubWebCommand c;if(xQueueReceive(webCommandQueue,&c,0)!=pdPASS)break;
+    switch(c.type){
+      case HUB_WEB_CMD_POWER:setPower(c.value!=0);break;
+      case HUB_WEB_CMD_BRIGHTNESS:setBrightness((uint8_t)c.value);break;
+      case HUB_WEB_CMD_SPEED:setEffectSpeed(c.value);break;
+      case HUB_WEB_CMD_EFFECT:setEffect((uint8_t)c.value);break;
+      case HUB_WEB_CMD_SCAN_START:
+        if(portalMode&&WiFi.getMode()==WIFI_AP)WiFi.mode(WIFI_AP_STA);
+        WiFi.scanDelete();if(WiFi.scanNetworks(true,true)==WIFI_SCAN_FAILED)LOG_ERR("Wi-Fi scan could not be started");break;
+      case HUB_WEB_CMD_CONFIG:{
+        hubMarkActivity();bool rotate=false,displayChanged=false,brightnessChanged=false;uint8_t orientation=0,brightness=0;
+        portENTER_CRITICAL(&hubDataMux);
+        if((c.configMask&HUB_WEB_CFG_LAYOUT)&&c.layout<HUB_LAYOUT_COUNT&&hubLayoutId!=c.layout){hubLayoutId=c.layout;hubForceFullRedraw=true;hubDisplayDirty=true;}
+        if(c.configMask&HUB_WEB_CFG_SAVER){if(c.saver<HUB_SAVER_COUNT)hubSaverId=c.saver;hubSaverActive=false;hubForceFullRedraw=true;hubDisplayDirty=true;}
+        if(c.configMask&HUB_WEB_CFG_IDLE)hubSaverIdleSeconds=c.saverIdle==0?0:(uint16_t)constrain(c.saverIdle,10,3600);
+        if((c.configMask&HUB_WEB_CFG_ORIENTATION)&&c.orientation<=3&&hubOrientation!=c.orientation){hubOrientation=c.orientation;orientation=hubOrientation;rotate=true;}
+        if(c.configMask&HUB_WEB_CFG_DISPLAY){bool v=c.display!=0;if(v!=hubDisplayEnabled)hubDisplayDirty=true;displayChanged=(v!=hubDisplayEnabled)||(v!=displayMatterOn);hubDisplayEnabled=v;displayMatterOn=v;if(!v)hubSaverActive=false;}
+        if(c.configMask&HUB_WEB_CFG_TEST_FPS){hubTestFpsTarget=(uint8_t)constrain(c.testFps,1,60);hubTestLastFrameAt=0;hubTestFpsWindowAt=millis();hubTestFrameCount=0;}
+        if(c.configMask&HUB_WEB_CFG_BRIGHTNESS){brightness=(uint8_t)constrain(c.brightness,1,100);brightnessChanged=displayBrightnessPercent!=brightness;displayBrightnessPercent=brightness;}
+        portEXIT_CRITICAL(&hubDataMux);
+        if(rotate){hubRenderTarget=&hubDisplay;hubDisplay.setRotation(orientation);hubDisplay.fillScreen(0x0000);hubDisplayDirty=true;LOG_B("TFT rotation changed: %u, dimensions=%dx%d",orientation,hubDisplay.width(),hubDisplay.height());}
+        if(displayChanged&&matterStarted)DisplayDimmer.setOnOff(displayMatterOn);
+        if(brightnessChanged&&matterStarted)DisplayDimmer.setBrightness(percentToMatter(brightness));
+        if(displayChanged||brightnessChanged)writeDisplayBacklight();
+        if(statePrefs.begin("hubcfg",false)){statePrefs.putUChar("layout",hubLayoutId);statePrefs.putUChar("saver",hubSaverId);statePrefs.putUShort("idleSec",hubSaverIdleSeconds);statePrefs.putUChar("orient",hubOrientation);statePrefs.putBool("display",hubDisplayEnabled);statePrefs.putBool("dispOn",displayMatterOn);statePrefs.putUChar("dispBri",displayBrightnessPercent);statePrefs.putUChar("testFps",hubTestFpsTarget);statePrefs.end();}
+        break;
+      }
+      case HUB_WEB_CMD_SAVER_START:{
+        bool enabled;uint8_t saver;portENTER_CRITICAL(&hubDataMux);enabled=hubDisplayEnabled;saver=hubSaverId;
+        if(enabled&&saver){hubSaverActive=true;hubDisplayDirty=false;hubClockDirty=hubSensorDirty=hubWeatherDirty=hubLightDirty=false;}
+        portEXIT_CRITICAL(&hubDataMux);
+        if(enabled&&saver){hubLastActivityAt=millis();initHubScreenSaver();drawHubScreenSaverFrame();hubSaverLastFrameAt=millis();lastTftDrawAt=hubSaverLastFrameAt;recordTftFrame();}
+        break;
+      }
+      case HUB_WEB_CMD_WEATHER_SOURCE:{
+        weatherSourceMode=(uint8_t)c.value;Preferences prefs;if(prefs.begin("hubcfg",false)){prefs.putUChar("wxsrc",(uint8_t)c.value);prefs.end();}
+        if(weatherTaskHandle)xTaskNotifyGive(weatherTaskHandle);break;
+      }
+      case HUB_WEB_CMD_WIFI_SAVE:
+        netPrefs.begin("netcfg",false);netPrefs.putString("ssid",c.ssid);netPrefs.putString("password",c.password);netPrefs.end();
+        restartPending=true;pendingFactoryReset=false;restartAt=millis()+900;break;
+      case HUB_WEB_CMD_WIFI_RESET:
+        netPrefs.begin("netcfg",false);netPrefs.clear();netPrefs.end();restartPending=true;pendingFactoryReset=false;restartAt=millis()+400;
+        LOG_R("Wi-Fi credentials cleared; Matter fabric preserved");break;
+      case HUB_WEB_CMD_FACTORY_RESET:restartPending=true;pendingFactoryReset=true;restartAt=millis()+300;break;
+      default:LOG_ERR("Unknown web command type=%u",c.type);break;
+    }
+  }
+}
+
 // ============================================================
 // Arduino setup / loop
 // ============================================================
@@ -6757,7 +6766,7 @@ void setup() {
     return;
   }
 
-  // STA association is asynchronous, but HTTP starts immediately afterward.
+  // Register routes now; PsychicHttp starts once STA or setup AP has a usable IP.
   setupWebServer();
   // The connection and Matter/MQTT startup continue from loop() without
   // blocking the display, HTTP server, button handling or diagnostics.
