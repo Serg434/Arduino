@@ -475,8 +475,29 @@ public:
   void send(int code,const char *type,const char *body){if(_response)_response->send(code,type,body?body:"");}
   void send(int code,const char *type,const String &body){if(_response)_response->send(code,type,body.c_str());}
   void send_P(int code,const char *type,const char *body){
-    // ESP32 flash is memory-mapped: PROGMEM is sent directly, without a RAM copy.
-    if(_response)_response->send(code,type,body?body:"");
+    // Stream large PROGMEM pages in bounded chunks instead of one 90+ KB
+    // synchronous send. This keeps the HTTPD task responsive and avoids
+    // requiring one large contiguous response operation on no-PSRAM ESP32.
+    if(!_response||!body)return;
+    _response->setCode(code);
+    _response->setContentType(type?type:"text/html");
+    _response->sendHeaders();
+    const size_t totalLength=strlen(body);
+    size_t offset=0;
+    while(offset<totalLength){
+      const size_t remaining=totalLength-offset;
+      const size_t chunkLength=remaining>2048U?2048U:remaining;
+      const esp_err_t err=_response->sendChunk((uint8_t *)(body+offset),chunkLength);
+      if(err!=ESP_OK){
+        LOG_ERR("HTTP PROGMEM chunk send failed: offset=%lu/%lu err=%s",
+          (unsigned long)offset,(unsigned long)totalLength,esp_err_to_name(err));
+        return;
+      }
+      offset+=chunkLength;
+    }
+    const esp_err_t finishErr=_response->finishChunking();
+    if(finishErr!=ESP_OK)
+      LOG_ERR("HTTP PROGMEM response finalization failed: err=%s",esp_err_to_name(finishErr));
   }
 };
 
